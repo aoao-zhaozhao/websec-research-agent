@@ -1,207 +1,347 @@
 """
-Agent 核心模块 —— 与 DeepSeek 交互的推理循环。
+Agent 核心模块 —— Web 漏洞审查引擎。
 
-不依赖 FastAPI，可以脱离 Web 服务器独立运行。
+v0.3: 基于 LangGraph 重构
+  - 用 LangGraph create_react_agent 替代手写 ReAct 循环
+  - ChatOpenAI 指向 DeepSeek（OpenAI 兼容）
+  - 5 个 Web 扫描工具: http_get / http_post / analyze_headers / extract_forms / extract_links
+  - 工具定义用 LangChain @tool 装饰器
 
-v0.2 —— 多轮对话记忆
-  每调用一次 run()，user 消息会追加到历史中，而非清空重来。
-  同一个 Agent 实例内，模型能"记住"之前说过的话。
+后续扩展:
+  v0.4 → RAG 知识库（CVE/OWASP）→ create_retrieval_chain
+  v0.5 → 工具权限管控 → tool_call_permissions
 """
 
-import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
-from openai import AsyncOpenAI
+# ── LangChain imports ──────────────────────────────
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.tools import tool
 
+# ── HTTP 工具所需 ──────────────────────────────────
+import requests
+from bs4 import BeautifulSoup
+
+
+# ═══════════════════════════════════════════════════════
+# 配置
+# ═══════════════════════════════════════════════════════
 
 @dataclass
 class AgentConfig:
-    """Agent 配置"""
-
     api_key: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""))
     base_url: str = field(
         default_factory=lambda: os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     )
     model: str = field(default_factory=lambda: os.getenv("DEEPSEEK_MODEL", "deepseek-chat"))
-    system_prompt: str = "你是一个有用的AI助手，请用中文回答用户的问题。"
-    max_turns: int = 20  # 最大推理轮数（防止无限循环）
+    max_turns: int = 20
 
 
-# ─── 工具定义（后面可扩展为插件体系） ──────────────────────────
+# ═══════════════════════════════════════════════════════
+# System Prompt — Web 安全专家
+# ═══════════════════════════════════════════════════════
 
-TOOLS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_current_time",
-            "description": "获取当前日期和时间",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "calculate",
-            "description": "执行数学计算，支持 + - * / 及括号",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "expression": {"type": "string", "description": "数学表达式，如 '(3+5)*2'"}
-                },
-                "required": ["expression"],
-            },
-        },
-    },
-]
+SYSTEM_PROMPT = """\
+你是一个Web应用安全审计专家。你的任务是扫描目标Web应用并发现漏洞。
+
+## 工作流程
+1. 先用 http_get 访问目标 URL 获取页面内容
+2. 用 extract_forms 提取页面中所有可注入的输入点
+3. 用 extract_links 提取页面内链，扩展攻击面
+4. 对每个输入点用 http_post 发送测试 payload（XSS、SQLi）
+5. 用 analyze_headers 检查安全响应头是否缺失
+
+## 输出格式
+每个发现按以下格式报告:
+- **漏洞类型**: (XSS / SQL注入 / CSRF / 安全头缺失 / 信息泄露 / ...)
+- **风险等级**: 🔴高危 / 🟡中危 / 🟢低危
+- **位置**: URL + 参数名/Header名
+- **证据**: 响应中观察到的具体内容
+- **复现步骤**: 如何重现
+- **修复建议**: 具体的代码/配置修改方案
+
+## 扫描原则
+- 仅分析 target URL 对应的主机，不要扫描外部链接
+- XSS payload: <script>alert(1)</script> 及其变体
+- SQLi payload: ' OR '1'='1 及 sleep 型
+- 注意响应中是否反射了 payload（XSS）或出现了数据库错误（SQLi）
+- 响应体可能很长，重点关注前 3000 字符中的关键信息
+
+请用中文回复。"""
 
 
-def _execute_tool(name: str, args: dict) -> str:
-    """执行工具调用，返回结果字符串"""
-    if name == "get_current_time":
-        from datetime import datetime
+# ═══════════════════════════════════════════════════════
+# 工具定义
+# ═══════════════════════════════════════════════════════
 
-        return f"当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    elif name == "calculate":
-        expr = args.get("expression", "")
-        try:
-            # 安全的 eval，仅限数学表达式
-            result = eval(expr, {"__builtins__": {}}, {})
-            return f"{expr} = {result}"
-        except Exception as e:
-            return f"计算错误: {e}"
-    else:
-        return f"未知工具: {name}"
+@tool
+def http_get(url: str) -> str:
+    """
+    发送 HTTP GET 请求到目标 URL，返回状态码、响应头、页面内容（前 3000 字符）。
+
+    用途: 获取页面内容、探测端点是否存在、触发反射型漏洞。
+
+    参数:
+        url: 目标 URL（如 http://example.com/page?id=1）
+    """
+    try:
+        r = requests.get(url, timeout=10, allow_redirects=True, verify=False)
+        headers_str = "\n".join(f"  {k}: {v}" for k, v in r.headers.items())
+        return (
+            f"[GET] {url}\n"
+            f"Status: {r.status_code} {r.reason}\n"
+            f"Response Headers:\n{headers_str}\n\n"
+            f"Body (first 3000 chars):\n{r.text[:3000]}"
+        )
+    except requests.exceptions.Timeout:
+        return f"[GET] {url}\nError: 请求超时"
+    except requests.exceptions.ConnectionError:
+        return f"[GET] {url}\nError: 无法连接到目标服务器"
+    except Exception as e:
+        return f"[GET] {url}\nError: {str(e)}"
+
+
+@tool
+def http_post(url: str, data: str = "", content_type: str = "application/x-www-form-urlencoded") -> str:
+    """
+    发送 HTTP POST 请求，用于向表单/API 提交测试 payload。
+
+    用途: 测试 XSS 反射、SQL 注入、命令注入、XXE 等。
+
+    参数:
+        url: 目标 URL
+        data: POST body 数据（如 username=admin&password=' OR '1'='1）
+        content_type: Content-Type（默认 application/x-www-form-urlencoded）
+    """
+    try:
+        headers = {"Content-Type": content_type}
+        r = requests.post(url, data=data, headers=headers, timeout=10, allow_redirects=True, verify=False)
+        return (
+            f"[POST] {url}\n"
+            f"Payload: {data[:500]}\n"
+            f"Status: {r.status_code}\n"
+            f"Body (first 3000 chars):\n{r.text[:3000]}"
+        )
+    except Exception as e:
+        return f"[POST] {url}\nError: {str(e)}"
+
+
+@tool
+def analyze_headers(url: str) -> str:
+    """
+    分析目标 URL 的 HTTP 安全响应头。
+
+    检查项:
+        - Content-Security-Policy (CSP)
+        - Strict-Transport-Security (HSTS)
+        - X-Frame-Options
+        - X-Content-Type-Options
+        - Referrer-Policy
+        - Permissions-Policy
+        - Set-Cookie (HttpOnly / Secure / SameSite)
+
+    参数:
+        url: 目标 URL
+    """
+    try:
+        r = requests.get(url, timeout=10, allow_redirects=True, verify=False)
+        headers = r.headers
+
+        checks = {
+            "Content-Security-Policy": "防止XSS和数据注入攻击",
+            "Strict-Transport-Security": "强制HTTPS连接",
+            "X-Frame-Options": "防止点击劫持",
+            "X-Content-Type-Options": "防止MIME类型嗅探",
+            "Referrer-Policy": "控制Referer信息泄露",
+            "Permissions-Policy": "限制浏览器API使用",
+        }
+
+        result = [f"安全头分析 - {url}", f"HTTP Status: {r.status_code}", ""]
+        issues = 0
+
+        for header, desc in checks.items():
+            if header in headers:
+                result.append(f"  ✅ {header}: {headers[header]}")
+            else:
+                result.append(f"  ❌ {header} — 缺失 ({desc})")
+                issues += 1
+
+        # Cookie 安全
+        cookies = headers.get("Set-Cookie", "")
+        if cookies:
+            cookie_flags = []
+            if "HttpOnly" not in cookies:
+                cookie_flags.append("HttpOnly 未设置")
+            if "Secure" not in cookies:
+                cookie_flags.append("Secure 未设置")
+            if "SameSite" not in cookies:
+                cookie_flags.append("SameSite 未设置")
+            if cookie_flags:
+                result.append(f"  ⚠️ Cookie 安全问题: {', '.join(cookie_flags)}")
+                issues += len(cookie_flags)
+        else:
+            result.append("  ℹ️ 未设置 Cookie")
+
+        result.append(f"\n共发现 {issues} 个安全问题")
+        return "\n".join(result)
+    except Exception as e:
+        return f"analyze_headers Error: {str(e)}"
+
+
+@tool
+def extract_forms(url: str) -> str:
+    """
+    从页面 HTML 中提取所有 <form> 标签及其输入参数。
+
+    返回: 每个表单的 action、method、以及所有 input/textarea/select 的 name/type。
+
+    用途: 发现可测试的注入点。
+
+    参数:
+        url: 目标页面 URL
+    """
+    try:
+        r = requests.get(url, timeout=10, verify=False)
+        soup = BeautifulSoup(r.text, "html.parser")
+        forms = soup.find_all("form")
+
+        if not forms:
+            return f"[extract_forms] {url}\n未发现任何表单。"
+
+        result = [f"[extract_forms] {url} — 发现 {len(forms)} 个表单", ""]
+        for i, form in enumerate(forms, 1):
+            action = form.get("action", "(当前页面)")
+            method = form.get("method", "GET").upper()
+            result.append(f"表单 #{i}: {method} {action}")
+
+            inputs = form.find_all(["input", "textarea", "select"])
+            for inp in inputs:
+                tag = inp.name
+                name = inp.get("name", "(无名称)")
+                itype = inp.get("type", "text") if tag == "input" else tag
+                result.append(f"  [{itype}] {name}")
+            result.append("")
+
+        return "\n".join(result)
+    except Exception as e:
+        return f"extract_forms Error: {str(e)}"
+
+
+@tool
+def extract_links(url: str) -> str:
+    """
+    从页面 HTML 中提取所有 <a href> 链接。
+
+    用途: 发现更多攻击面（API 端点、隐藏页面、管理后台等）。
+
+    参数:
+        url: 目标页面 URL
+    """
+    try:
+        from urllib.parse import urljoin, urlparse
+
+        r = requests.get(url, timeout=10, verify=False)
+        soup = BeautifulSoup(r.text, "html.parser")
+        links = soup.find_all("a", href=True)
+
+        base_domain = urlparse(url).netloc
+        internal, external = [], []
+
+        for link in links:
+            href = urljoin(url, link["href"])
+            parsed = urlparse(href)
+            label = link.get_text(strip=True) or "(无文本)"
+            entry = f"  {href}  — {label}"
+            if parsed.netloc == base_domain or parsed.netloc == "":
+                internal.append(entry)
+            else:
+                external.append(entry)
+
+        result = [
+            f"[extract_links] {url}",
+            f"内部链接 ({len(internal)}):",
+        ]
+        result.extend(internal[:30])  # 最多 30 条
+        result.append(f"\n外部链接 ({len(external)}) — 不扫描:")
+        result.extend(external[:10])
+        result.append(f"\n总计: {len(internal) + len(external)} 个链接")
+        return "\n".join(result)
+    except Exception as e:
+        return f"extract_links Error: {str(e)}"
+
+
+# ═══════════════════════════════════════════════════════
+# Agent 类 — 基于 LangGraph
+# ═══════════════════════════════════════════════════════
+
+TOOLS = [http_get, http_post, analyze_headers, extract_forms, extract_links]
 
 
 class Agent:
     """
-    AI Agent 核心。
+    Web 漏洞审查 Agent (v0.3 — LangGraph 引擎)。
 
-    v0.2 改动:
-        - messages 在 __init__ 时只存 system_prompt，不再每次 run() 清空
-        - 每次调用 run() 只是在尾部追加 user 消息
-        - 模型回复和工具调用自动追加入历史 → 同一个实例内天然拥有多轮记忆
+    与 v0.2 的区别:
+        - 引擎从手写 ReAct 循环 → LangGraph create_react_agent
+        - 工具从手写 JSON → LangChain @tool 装饰器
+        - messages 仍跨 run() 累积（多轮记忆），但 agent 内部管理 tool-call 循环
 
     用法:
         agent = Agent(AgentConfig())
-        async for token in agent.run("我叫张三"):
+        async for token in agent.run("扫描 http://testphp.vulnweb.com"):
             print(token, end="")
-        async for token in agent.run("我叫什么？"):
-            print(token, end="")     # ← 能回答"你叫张三"
-        agent.clear()                # ← 显式清空记忆
     """
 
     def __init__(self, config: AgentConfig | None = None):
         self.config = config or AgentConfig()
-        self.client = AsyncOpenAI(
+        self.llm = ChatOpenAI(
             api_key=self.config.api_key,
             base_url=self.config.base_url,
+            model=self.config.model,
+            temperature=0.3,  # 低温度，安全分析需要精确
         )
-        # ── v0.2: 初始化时只放 system_prompt，后续 run() 不断追加 ──
-        self.messages: list[dict] = [
-            {"role": "system", "content": self.config.system_prompt}
-        ]
+        self.agent = create_react_agent(self.llm, TOOLS)
+        self.messages = [SystemMessage(content=SYSTEM_PROMPT)]
 
     def clear(self) -> None:
-        """清空对话历史，只保留 system_prompt"""
-        self.messages = [
-            {"role": "system", "content": self.config.system_prompt}
-        ]
+        """清空对话历史，只保留 system prompt"""
+        self.messages = [SystemMessage(content=SYSTEM_PROMPT)]
 
     async def run(self, user_input: str) -> AsyncIterator[str]:
         """
-        执行 Agent 推理循环，逐 token yield 最终回复。
+        执行扫描，逐 token yield 模型输出。
 
-        v0.2: user 消息追加到历史，而非清空重来。
-        内部 tool-call 循环：模型调工具 → 执行 → 把结果喂回去 → 继续。
-        对话历史（包括 tool call）在同一个 Agent 实例内持续累积。
+        LangGraph 的 astream_events(version="v2") 在 on_chat_model_stream
+        事件中产出每个 token。工具调用过程由 agent 内部处理，不会
+        yield 给调用者（避免了工具参数碎片出现在输出中）。
         """
-        # ── v0.2: 追加而非重置 ──
-        self.messages.append({"role": "user", "content": user_input})
+        self.messages.append(HumanMessage(content=user_input))
 
-        for _ in range(self.config.max_turns):
-            stream = await self.client.chat.completions.create(
-                model=self.config.model,
-                messages=self.messages,
-                tools=TOOLS,
-                stream=True,
-                temperature=0.7,
-            )
+        # 收集完整回复（用于写入历史）
+        full_response: list[str] = []
 
-            # ── 收集本轮 delta ─────────────────────────
-            content_parts: list[str] = []
-            tool_calls_map: dict[int, dict] = {}  # idx → {id, name, args_str}
+        async for event in self.agent.astream_events(
+            {"messages": list(self.messages)},  # copy to avoid mutation during iteration
+            version="v2",
+        ):
+            kind = event["event"]
 
-            async for chunk in stream:
-                delta = chunk.choices[0].delta
+            # 只有 LLM 产出的文本 token 才 yield（工具调用内部细节不暴露）
+            if kind == "on_chat_model_stream":
+                chunk = event["data"]["chunk"]
+                if chunk.content:
+                    full_response.append(chunk.content)
+                    yield chunk.content
 
-                # 文本 token
-                if delta.content:
-                    content_parts.append(delta.content)
-                    yield delta.content
+        # 将本轮回复写入历史
+        response_text = "".join(full_response).strip()
+        if response_text:
+            self.messages.append(AIMessage(content=response_text))
 
-                # 工具调用 token
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index
-                        if idx not in tool_calls_map:
-                            tool_calls_map[idx] = {
-                                "id": tc.id or "",
-                                "name": "",
-                                "args_str": "",
-                            }
-                        entry = tool_calls_map[idx]
-                        if tc.id:
-                            entry["id"] = tc.id
-                        if tc.function:
-                            if tc.function.name:
-                                entry["name"] += tc.function.name
-                            if tc.function.arguments:
-                                entry["args_str"] += tc.function.arguments
-
-            # ── 如果纯文本回复，结束 ──────────────────
-            if not tool_calls_map:
-                # v0.2: assistant 回复也写入历史
-                self.messages.append({
-                    "role": "assistant",
-                    "content": "".join(content_parts),
-                })
-                return  # 已经 yield 完了
-
-            # ── 否则执行工具，把结果加入历史继续循环 ──
-            assistant_msg: dict = {
-                "role": "assistant",
-                "content": "".join(content_parts) or None,
-                "tool_calls": [],
-            }
-            for idx in sorted(tool_calls_map.keys()):
-                tc = tool_calls_map[idx]
-                assistant_msg["tool_calls"].append(
-                    {
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {
-                            "name": tc["name"],
-                            "arguments": tc["args_str"],
-                        },
-                    }
-                )
-            self.messages.append(assistant_msg)
-
-            # 执行每个工具，并写入 tool result
-            for idx in sorted(tool_calls_map.keys()):
-                tc = tool_calls_map[idx]
-                result = _execute_tool(tc["name"], json.loads(tc["args_str"]))
-                self.messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": result,
-                    }
-                )
-
-            # 循环回到顶部，让模型看到工具结果后决定下一步
-
-        yield "\n[已达到最大推理轮数]"
+        # 如果本轮没有文本输出（全是工具调用且最终无总结），兜底
+        if not response_text:
+            self.messages.append(AIMessage(content="扫描完成，请查看上方工具调用结果。"))

@@ -1,6 +1,6 @@
-# My Agent
+# My Agent — Web 漏洞审查引擎
 
-一个基于 DeepSeek 的 AI Agent，支持工具调用、流式输出、多轮对话记忆。通过 FastAPI + WebSocket 提供服务。
+一个基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。支持自动爬取、漏洞探测、安全头分析。通过 FastAPI + WebSocket 提供服务。
 
 ## 项目结构
 
@@ -10,10 +10,10 @@ my-agent/
 ├── requirements.txt      # Python 依赖
 ├── agent/
 │   ├── __init__.py
-│   └── core.py           # Agent 推理核心（与 FastAPI 解耦，可独立运行）
+│   └── core.py           # Agent 核心（LangGraph 引擎 + 5 个扫描工具）
 ├── server/
-│   └── web_server.py     # FastAPI 服务器（WebSocket 对话 + REST API）
-└── test_client.py        # 命令行测试客户端（支持多轮对话）
+│   └── web_server.py     # FastAPI 服务器（WebSocket + REST）
+└── test_client.py        # 命令行交互客户端
 ```
 
 ## 快速开始
@@ -24,7 +24,7 @@ my-agent/
 cp .env.example .env
 ```
 
-编辑 `.env`，填入你的 DeepSeek API Key：
+编辑 `.env`，填入 DeepSeek API Key：
 
 ```env
 DEEPSEEK_API_KEY=sk-your-api-key-here
@@ -32,7 +32,7 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
 ```
 
-### 2. 创建虚拟环境 & 安装依赖
+### 2. 安装依赖
 
 ```bash
 python -m venv myagent
@@ -49,70 +49,44 @@ pip install -r requirements.txt
 python server/web_server.py
 ```
 
-看到以下输出表示启动成功：
+### 4. 开始扫描
 
-```
-🚀 Agent 服务启动 (v0.2): http://127.0.0.1:9120
-   WebSocket 对话: ws://127.0.0.1:9120/api/chat
-   配置接口:       http://127.0.0.1:9120/api/config
-   健康检查:       http://127.0.0.1:9120/api/health
-```
-
-### 4. 测试多轮对话
-
-另开一个终端，激活虚拟环境后运行：
+另开终端：
 
 ```bash
 python test_client.py
 ```
 
-现在支持连续输入多轮对话：
+输入要扫描的 URL：
 
 ```
-👤 你: 我叫张三
-🤖 Agent: 你好张三！有什么我可以帮你的吗？
-
-👤 你: 我叫什么名字？
-🤖 Agent: 你叫张三。
-
-👤 你: /clear
-🧹 对话记忆已清空
-
-👤 你: exit
-👋 退出
+🔍 你: 扫描 http://testphp.vulnweb.com 的安全漏洞
 ```
+
+Agent 会自动：
+1. 访问页面 → 提取表单和链接
+2. 对每个输入点注入 XSS/SQLi payload
+3. 分析安全响应头
+4. 输出漏洞报告（类型 + 风险等级 + 证据 + 修复建议）
 
 ## API 接口
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
-| `/api/chat` | WebSocket | 核心对话——逐 token 流式输出，支持工具调用和多轮记忆 |
-| `/api/config` | GET | 查看当前配置 |
-| `/api/config` | PUT | 修改模型/System Prompt 等配置 |
-| `/api/sessions` | GET | 查看当前活跃连接数 |
+| `/api/chat` | WebSocket | 核心对话——逐 token 流式输出扫描结果 |
+| `/api/config` | GET/PUT | 查看/修改配置 |
+| `/api/sessions` | GET | 活跃连接数 |
 | `/api/health` | GET | 健康检查 |
 
-### WebSocket 消息格式
+## 扫描工具
 
-**发送（客户端 → 服务器）：**
-
-```json
-// 普通消息
-{"content": "帮我算一下 123 * 456"}
-
-// 清空记忆
-{"command": "clear"}
-```
-
-**接收（服务器 → 客户端）：**
-
-```json
-{"type": "token", "content": "好的"}
-{"type": "token", "content": "，"}
-...
-{"type": "done"}
-{"type": "info", "content": "对话记忆已清空"}
-```
+| 工具 | 用途 |
+|---|---|
+| `http_get(url)` | GET 请求，获取页面内容和响应头 |
+| `http_post(url, data)` | POST 请求，发送测试 payload（XSS/SQLi） |
+| `analyze_headers(url)` | 检查安全头（CSP/HSTS/X-Frame-Options 等） |
+| `extract_forms(url)` | 提取页面所有表单和输入参数 |
+| `extract_links(url)` | 提取页面内链，扩展攻击面 |
 
 ## 架构
 
@@ -121,47 +95,41 @@ python test_client.py
     │
     │ HTTP REST + WebSocket
     ▼
-┌──────────────────────────┐
-│        FastAPI            │  ← server/web_server.py
-│  (控制面 - v0.2)          │
-│  • 配置管理                │
-│  • WS 会话管理             │     每个 WS 连接内复用同一个
-│  • 流式输出                │     Agent 实例 → 多轮记忆
-└──────────┬───────────────┘
-           │ 函数调用
-           ▼
-┌──────────────────────────┐
-│       Agent Core          │  ← agent/core.py
-│  (推理面 - v0.2)          │
-│  • DeepSeek 调用           │
-│  • 工具执行                │     messages 跨 run() 累积
-│  • 多轮对话记忆            │     clear() 可随时清空
-└──────────────────────────┘
+┌──────────────────────────────┐
+│      FastAPI (控制面)         │  ← server/web_server.py
+│      WebSocket + REST         │
+└──────────────┬───────────────┘
+               │ 函数调用
+               ▼
+┌──────────────────────────────┐
+│   LangGraph Agent (推理面)    │  ← agent/core.py
+│   • ChatOpenAI → DeepSeek    │
+│   • create_react_agent       │     LangGraph 管理 ReAct 循环
+│   • @tool 装饰器定义工具       │     后续直接接 RAG
+└──────────────────────────────┘
 ```
-
-- `agent/core.py` 不依赖 FastAPI，可以脱离 Web 服务器独立使用
-- FastAPI 只是 Agent 的一个"外壳"，负责把用户输入喂进去、把 token 推出来
 
 ## 版本演进
 
-### v0.1 → v0.2：多轮对话记忆
+### v0.1 — 基础框架
+- 手写 ReAct 循环，支持 DeepSeek 调用 + 2 个工具（计算器/时间）
+- 每条消息新建 Agent 实例，无记忆
 
-| 文件 | 改动 |
-|---|---|
-| `agent/core.py` | `_reset()` 移除；`messages` 在 `__init__` 时初始化只含 system_prompt；`run()` 每次追加 user 消息而非清空；新增 `clear()` 方法 |
-| `server/web_server.py` | Agent 实例从"每条消息 new 一个"改为"每个 WS 连接创建一个，全程复用"；新增 `/clear` 指令和 `/api/sessions` 接口 |
-| `test_client.py` | 从"发一条退出一条"改为 `while True` 循环 + `input()` 交互，支持 `/clear` 和 `exit` |
+### v0.2 — 多轮对话记忆
+- `self.messages` 跨 `run()` 累积
+- Agent 实例绑定到 WS 连接生命周期
+- 新增 `/clear` 指令
 
-**核心思路**：Agent 的 `self.messages` 列表在实例生命周期内持续累积。FastAPI 不再每句话重建 Agent，而是把 Agent 的生命周期绑定到 WebSocket 连接上。WS 连上 → Agent 诞生，WS 断开 → Agent 销毁。同一连接内的所有对话自然累积在 messages 列表里。
+### v0.3 — LangGraph 重构 + Web 漏洞扫描
+- **引擎**: 手写 ReAct → `langgraph.prebuilt.create_react_agent`
+- **工具**: 手写 JSON → `@tool` 装饰器，新增 5 个扫描工具
+- **LLM**: 从 `AsyncOpenAI` 原始调用 → `ChatOpenAI`（LangChain 统一接口）
+- FastAPI 层 **零改动** —— 证明了分层解耦的价值
 
-## 内置工具
-
-| 工具 | 说明 |
-|---|---|
-| `get_current_time` | 获取当前日期时间 |
-| `calculate` | 安全的数学表达式计算 |
-
-工具定义在 `agent/core.py` 的 `TOOLS` 列表中，添加新工具只需三个步骤：
-1. 在 `TOOLS` 中添加函数定义
-2. 在 `_execute_tool()` 中添加执行逻辑
-3. 重启服务
+| 维度 | v0.2 | v0.3 |
+|---|---|---|
+| Agent 循环 | 手写 for + tool_calls_map | LangGraph 自动 ReAct |
+| 工具定义 | 手写 JSON dict | `@tool` 装饰器 |
+| LLM 调用 | `AsyncOpenAI` 裸调 | `ChatOpenAI` |
+| 流式输出 | 自己拼 delta | `astream_events(version="v2")` |
+| 后续扩展 RAG | 需大改 | `create_retrieval_chain` 直接接 |

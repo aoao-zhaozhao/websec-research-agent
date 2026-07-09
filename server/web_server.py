@@ -1,10 +1,10 @@
 """
-FastAPI 服务器 —— 提供 WebSocket 对话和 REST 管理 API。
+FastAPI 服务器 —— Web 漏洞审查 Agent (v0.3)。
 
-v0.2 改动:
-    - WS 连接内复用同一个 Agent 实例 → 多轮对话记忆
-    - 新增 /api/chat/clear WebSocket 指令 → 清空记忆
-    - 新增 /api/sessions 查看活跃会话数
+v0.3: 底层切换到 LangGraph，FastAPI 层保持不变。
+  - WS 连接内复用同一個 Agent 实例
+  - 流式输出通过 LangGraph astream_events 逐 token 推送
+  - REST: /api/config /api/sessions /api/health
 
 用法:
     python server/web_server.py
@@ -30,7 +30,7 @@ from agent import Agent, AgentConfig
 
 # ─── FastAPI 应用 ──────────────────────────────────────
 
-app = FastAPI(title="My Agent", version="0.2.0")
+app = FastAPI(title="Web Security Scanner", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,7 +42,7 @@ app.add_middleware(
 # ─── 全局状态 ────────────────────────────────────────
 
 agent_config = AgentConfig()
-active_sessions: int = 0  # 当前活跃 WS 连接数
+active_sessions: int = 0
 
 
 # ─── REST: 配置读写 ────────────────────────────────────
@@ -52,14 +52,13 @@ async def get_config():
     return {
         "model": agent_config.model,
         "base_url": agent_config.base_url,
-        "system_prompt": agent_config.system_prompt,
         "has_api_key": bool(agent_config.api_key),
     }
 
 
 @app.put("/api/config")
 async def update_config(data: dict):
-    allowed = ["model", "base_url", "system_prompt", "api_key", "max_turns"]
+    allowed = ["model", "base_url", "api_key", "max_turns"]
     for k in allowed:
         if k in data:
             setattr(agent_config, k, data[k])
@@ -68,7 +67,6 @@ async def update_config(data: dict):
 
 @app.get("/api/sessions")
 async def get_sessions():
-    """查看当前活跃的 WebSocket 连接数"""
     return {"active_sessions": active_sessions}
 
 
@@ -80,10 +78,10 @@ async def chat(ws: WebSocket):
 
     await ws.accept()
 
-    # ── v0.2: Agent 实例在连接建立时创建一次，整个会话复用 ──
+    # Agent 实例绑定到 WS 连接生命周期
     agent = Agent(agent_config)
     active_sessions += 1
-    print(f"[WS] 新会话建立 (活跃: {active_sessions})")
+    print(f"[WS] 新扫描会话建立 (活跃: {active_sessions})")
 
     try:
         while True:
@@ -93,7 +91,7 @@ async def chat(ws: WebSocket):
             except json.JSONDecodeError:
                 msg = {"content": raw}
 
-            # ── v0.2: 特殊指令 /clear 清空记忆 ──
+            # /clear 指令
             if msg.get("command") == "clear":
                 agent.clear()
                 await ws.send_json({"type": "info", "content": "对话记忆已清空"})
@@ -103,11 +101,10 @@ async def chat(ws: WebSocket):
             if not user_input.strip():
                 continue
 
-            # 流式输出（同一个 agent 自动累积历史）
+            # 通过 LangGraph agent 流式扫描
             async for token in agent.run(user_input):
                 await ws.send_json({"type": "token", "content": token})
 
-            # 发送本轮结束信号
             await ws.send_json({"type": "done"})
 
     except WebSocketDisconnect:
@@ -120,7 +117,12 @@ async def chat(ws: WebSocket):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "model": agent_config.model, "active_sessions": active_sessions}
+    return {
+        "status": "ok",
+        "model": agent_config.model,
+        "engine": "LangGraph",
+        "active_sessions": active_sessions,
+    }
 
 
 # ─── 启动入口 ─────────────────────────────────────────
@@ -131,12 +133,12 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "9120"))
 
-    print(f"🚀 Agent 服务启动 (v0.2): http://{host}:{port}")
-    print(f"   WebSocket 对话: ws://{host}:{port}/api/chat")
-    print(f"   配置接口:       http://{host}:{port}/api/config")
-    print(f"   健康检查:       http://{host}:{port}/api/health")
-    print(f"   会话数:         http://{host}:{port}/api/sessions")
+    print(f"🔍 Web 漏洞审查 Agent v0.3 (LangGraph): http://{host}:{port}")
+    print(f"   WebSocket: ws://{host}:{port}/api/chat")
+    print(f"   配置:      http://{host}:{port}/api/config")
+    print(f"   健康检查:   http://{host}:{port}/api/health")
     print()
-    print("   v0.2 新特性: 多轮对话记忆 / 同一 WS 连接内 Agent 自动记住上文")
+    print("   输入网站 URL 开始扫描, 例如:")
+    print('   {"content": "扫描 http://testphp.vulnweb.com 的安全漏洞"}')
 
     uvicorn.run(app, host=host, port=port, log_level="info")

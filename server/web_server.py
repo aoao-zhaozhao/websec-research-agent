@@ -1,13 +1,13 @@
 """
 FastAPI 服务器 —— 提供 WebSocket 对话和 REST 管理 API。
 
+v0.2 改动:
+    - WS 连接内复用同一个 Agent 实例 → 多轮对话记忆
+    - 新增 /api/chat/clear WebSocket 指令 → 清空记忆
+    - 新增 /api/sessions 查看活跃会话数
+
 用法:
     python server/web_server.py
-
-模块分工:
-    - /api/chat (WebSocket) → 实时对话，流式输出
-    - /api/config (GET/PUT)  → 管理配置
-    -  SPA 静态文件          → 前端页面
 """
 
 import json
@@ -15,7 +15,6 @@ import os
 import sys
 from pathlib import Path
 
-# 确保项目根目录在 path 中，方便 import agent 模块
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -31,7 +30,7 @@ from agent import Agent, AgentConfig
 
 # ─── FastAPI 应用 ──────────────────────────────────────
 
-app = FastAPI(title="My Agent", version="0.1.0")
+app = FastAPI(title="My Agent", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,9 +39,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── 全局状态（简单阶段，用内存字典存配置）────────────
+# ─── 全局状态 ────────────────────────────────────────
 
 agent_config = AgentConfig()
+active_sessions: int = 0  # 当前活跃 WS 连接数
 
 
 # ─── REST: 配置读写 ────────────────────────────────────
@@ -66,44 +66,61 @@ async def update_config(data: dict):
     return {"status": "ok"}
 
 
+@app.get("/api/sessions")
+async def get_sessions():
+    """查看当前活跃的 WebSocket 连接数"""
+    return {"active_sessions": active_sessions}
+
+
 # ─── WebSocket: 核心对话 ──────────────────────────────
 
 @app.websocket("/api/chat")
 async def chat(ws: WebSocket):
+    global active_sessions
+
     await ws.accept()
+
+    # ── v0.2: Agent 实例在连接建立时创建一次，整个会话复用 ──
+    agent = Agent(agent_config)
+    active_sessions += 1
+    print(f"[WS] 新会话建立 (活跃: {active_sessions})")
 
     try:
         while True:
-            # 收用户消息
             raw = await ws.receive_text()
             try:
                 msg = json.loads(raw)
-                user_input = msg.get("content", "")
             except json.JSONDecodeError:
-                user_input = raw
+                msg = {"content": raw}
 
+            # ── v0.2: 特殊指令 /clear 清空记忆 ──
+            if msg.get("command") == "clear":
+                agent.clear()
+                await ws.send_json({"type": "info", "content": "对话记忆已清空"})
+                continue
+
+            user_input = msg.get("content", "")
             if not user_input.strip():
                 continue
 
-            # 创建 Agent 实例（每次对话独立，不共享 history）
-            agent = Agent(agent_config)
-
-            # 流式输出
+            # 流式输出（同一个 agent 自动累积历史）
             async for token in agent.run(user_input):
                 await ws.send_json({"type": "token", "content": token})
 
-            # 发送完成信号
+            # 发送本轮结束信号
             await ws.send_json({"type": "done"})
 
     except WebSocketDisconnect:
-        print("[WS] 客户端断开连接")
+        print(f"[WS] 客户端断开连接 (活跃: {active_sessions - 1})")
+    finally:
+        active_sessions -= 1
 
 
 # ─── 健康检查 ─────────────────────────────────────────
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "model": agent_config.model}
+    return {"status": "ok", "model": agent_config.model, "active_sessions": active_sessions}
 
 
 # ─── 启动入口 ─────────────────────────────────────────
@@ -114,9 +131,12 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "9120"))
 
-    print(f"🚀 Agent 服务启动: http://{host}:{port}")
+    print(f"🚀 Agent 服务启动 (v0.2): http://{host}:{port}")
     print(f"   WebSocket 对话: ws://{host}:{port}/api/chat")
     print(f"   配置接口:       http://{host}:{port}/api/config")
     print(f"   健康检查:       http://{host}:{port}/api/health")
+    print(f"   会话数:         http://{host}:{port}/api/sessions")
+    print()
+    print("   v0.2 新特性: 多轮对话记忆 / 同一 WS 连接内 Agent 自动记住上文")
 
     uvicorn.run(app, host=host, port=port, log_level="info")

@@ -2,6 +2,10 @@
 Agent 核心模块 —— 与 DeepSeek 交互的推理循环。
 
 不依赖 FastAPI，可以脱离 Web 服务器独立运行。
+
+v0.2 —— 多轮对话记忆
+  每调用一次 run()，user 消息会追加到历史中，而非清空重来。
+  同一个 Agent 实例内，模型能"记住"之前说过的话。
 """
 
 import json
@@ -75,10 +79,18 @@ class Agent:
     """
     AI Agent 核心。
 
-    用法（独立运行，不用 FastAPI）:
+    v0.2 改动:
+        - messages 在 __init__ 时只存 system_prompt，不再每次 run() 清空
+        - 每次调用 run() 只是在尾部追加 user 消息
+        - 模型回复和工具调用自动追加入历史 → 同一个实例内天然拥有多轮记忆
+
+    用法:
         agent = Agent(AgentConfig())
-        async for token in agent.run("帮我算一下 123 * 456"):
-            print(token, end="", flush=True)
+        async for token in agent.run("我叫张三"):
+            print(token, end="")
+        async for token in agent.run("我叫什么？"):
+            print(token, end="")     # ← 能回答"你叫张三"
+        agent.clear()                # ← 显式清空记忆
     """
 
     def __init__(self, config: AgentConfig | None = None):
@@ -87,23 +99,27 @@ class Agent:
             api_key=self.config.api_key,
             base_url=self.config.base_url,
         )
-        self.messages: list[dict] = []
+        # ── v0.2: 初始化时只放 system_prompt，后续 run() 不断追加 ──
+        self.messages: list[dict] = [
+            {"role": "system", "content": self.config.system_prompt}
+        ]
 
-    def _reset(self, user_input: str) -> None:
-        """每轮对话重置消息列表"""
+    def clear(self) -> None:
+        """清空对话历史，只保留 system_prompt"""
         self.messages = [
-            {"role": "system", "content": self.config.system_prompt},
-            {"role": "user", "content": user_input},
+            {"role": "system", "content": self.config.system_prompt}
         ]
 
     async def run(self, user_input: str) -> AsyncIterator[str]:
         """
         执行 Agent 推理循环，逐 token yield 最终回复。
 
-        内部有 tool-call 循环：模型调工具 → 执行 → 把结果喂回去 → 继续
-        但只有最终的文本回复才对调用者 yield。
+        v0.2: user 消息追加到历史，而非清空重来。
+        内部 tool-call 循环：模型调工具 → 执行 → 把结果喂回去 → 继续。
+        对话历史（包括 tool call）在同一个 Agent 实例内持续累积。
         """
-        self._reset(user_input)
+        # ── v0.2: 追加而非重置 ──
+        self.messages.append({"role": "user", "content": user_input})
 
         for _ in range(self.config.max_turns):
             stream = await self.client.chat.completions.create(
@@ -147,10 +163,14 @@ class Agent:
 
             # ── 如果纯文本回复，结束 ──────────────────
             if not tool_calls_map:
+                # v0.2: assistant 回复也写入历史
+                self.messages.append({
+                    "role": "assistant",
+                    "content": "".join(content_parts),
+                })
                 return  # 已经 yield 完了
 
             # ── 否则执行工具，把结果加入历史继续循环 ──
-            # 先把 assistant 消息写入 history
             assistant_msg: dict = {
                 "role": "assistant",
                 "content": "".join(content_parts) or None,

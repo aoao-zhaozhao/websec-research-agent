@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -78,8 +79,31 @@ async def chat(ws: WebSocket):
 
     await ws.accept()
     agent = Agent(agent_config)
+    scan_task: asyncio.Task | None = None
+    send_lock = asyncio.Lock()
     active_sessions += 1
     print(f"[WS] session opened (active: {active_sessions})")
+
+    async def send_json(payload: dict[str, Any]) -> None:
+        async with send_lock:
+            await ws.send_json(payload)
+
+    async def run_scan(user_input: str) -> None:
+        try:
+            async for event in agent.run_events(user_input):
+                if event.get("type") in {"tool_start", "tool_end"}:
+                    event["input"] = _json_safe(event.get("input"))
+                    event["output"] = _json_safe(event.get("output"))
+                await send_json(event)
+            await send_json({"type": "done"})
+        except asyncio.CancelledError:
+            await send_json({"type": "stopped", "content": "扫描已停止"})
+            raise
+        except Exception as exc:
+            import traceback
+
+            print(f"[ERROR] Agent exception:\n{traceback.format_exc()}")
+            await send_json({"type": "error", "content": f"扫描出错: {exc}"})
 
     try:
         while True:
@@ -89,31 +113,36 @@ async def chat(ws: WebSocket):
             except json.JSONDecodeError:
                 msg = {"content": raw}
 
+            if msg.get("command") == "stop":
+                if scan_task and not scan_task.done():
+                    scan_task.cancel()
+                    await send_json({"type": "info", "content": "正在停止当前扫描..."})
+                else:
+                    await send_json({"type": "info", "content": "当前没有正在运行的扫描"})
+                continue
+
             if msg.get("command") == "clear":
+                if scan_task and not scan_task.done():
+                    scan_task.cancel()
                 agent.clear()
-                await ws.send_json({"type": "info", "content": "对话记忆已清空"})
+                await send_json({"type": "info", "content": "对话记忆已清空"})
                 continue
 
             user_input = str(msg.get("content", "")).strip()
             if not user_input:
                 continue
 
-            try:
-                async for event in agent.run_events(user_input):
-                    if event.get("type") in {"tool_start", "tool_end"}:
-                        event["input"] = _json_safe(event.get("input"))
-                        event["output"] = _json_safe(event.get("output"))
-                    await ws.send_json(event)
-                await ws.send_json({"type": "done"})
-            except Exception as exc:
-                import traceback
+            if scan_task and not scan_task.done():
+                await send_json({"type": "error", "content": "已有扫描正在运行，请先停止当前扫描"})
+                continue
 
-                print(f"[ERROR] Agent exception:\n{traceback.format_exc()}")
-                await ws.send_json({"type": "error", "content": f"扫描出错: {exc}"})
+            scan_task = asyncio.create_task(run_scan(user_input))
 
     except WebSocketDisconnect:
         print(f"[WS] session closed (active: {active_sessions - 1})")
     finally:
+        if scan_task and not scan_task.done():
+            scan_task.cancel()
         active_sessions -= 1
 
 

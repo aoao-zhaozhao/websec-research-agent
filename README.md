@@ -74,11 +74,35 @@ python server/web_server.py
 http://127.0.0.1:9120
 ```
 
+### 4. 停止服务
+
+如果服务是在当前终端启动的，按 `Ctrl+C`。
+
+如果服务在后台运行，释放 9120 端口：
+
+```powershell
+Get-NetTCPConnection -LocalPort 9120 | ForEach-Object {
+  Stop-Process -Id $_.OwningProcess -Force
+}
+```
+
+## Web 工作台
+
+底部输入区包含三个操作：
+
+| 按钮 | 作用 |
+| --- | --- |
+| `▶` | 开始扫描 |
+| `■` | 停止当前扫描，不清空当前会话 |
+| `×` | 清空当前会话内容和 Agent 记忆 |
+
+关闭浏览器标签页会断开 WebSocket，会话生命周期随连接结束。`×` 只清空内容，`■` 用于取消正在运行的扫描任务。
+
 ## API
 
 | 接口 | 方法 | 说明 |
 | --- | --- | --- |
-| `/api/chat` | WebSocket | 流式对话，返回 token 和工具事件 |
+| `/api/chat` | WebSocket | 流式对话，返回 token 和工具事件；支持 `clear` / `stop` 命令 |
 | `/api/config` | GET/PUT | 查看或修改运行配置 |
 | `/api/sessions` | GET | 活跃连接数 |
 | `/api/health` | GET | 健康检查 |
@@ -112,4 +136,4 @@ http://127.0.0.1:9120
 - 自动提取 `flag{...}` / `ctf{...}` / `BUGKU{...}` / `key{...}` 等常见 CTF 证据
 - 输出命中 payload、URL、证据摘要、置信度和下一步建议
 
-Web UI 同时升级为工作台形态，但版本仍按 v0.7 发布。
+Web UI 同时升级为工作台形态，包含工具轨迹、风险摘录、会话历史和停止扫描按钮；版本仍按 v0.7 发布。

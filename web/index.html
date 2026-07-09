@@ -254,6 +254,7 @@
   .tool-card.running { border-color: var(--amber); }
   .tool-card.done { border-color: #466649; }
   .tool-card.error { border-color: var(--red); }
+  .tool-card.stopped { border-color: #6b7280; }
   .tool-head {
     display: flex;
     align-items: center;
@@ -275,6 +276,7 @@
   }
   .badge.done { background: var(--green); }
   .badge.error { background: var(--red); color: #fff; }
+  .badge.stopped { background: #9ca3af; color: #111827; }
   details {
     margin-top: 9px;
   }
@@ -316,7 +318,7 @@
   }
   .input-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 42px 42px;
+    grid-template-columns: minmax(0, 1fr) 42px 42px 42px;
     gap: 9px;
   }
   #userInput {
@@ -403,6 +405,7 @@
       <div class="input-row">
         <textarea id="userInput" placeholder="https://example.com"></textarea>
         <button class="icon-btn" id="sendBtn" title="发送">▶</button>
+        <button class="icon-btn" id="stopBtn" title="停止当前扫描" disabled>■</button>
         <button class="icon-btn" id="clearBtn" title="清空当前会话">×</button>
       </div>
     </footer>
@@ -444,6 +447,7 @@ const toolRail = document.getElementById('toolRail');
 const findingRail = document.getElementById('findingRail');
 const input = document.getElementById('userInput');
 const sendBtn = document.getElementById('sendBtn');
+const stopBtn = document.getElementById('stopBtn');
 const clearBtn = document.getElementById('clearBtn');
 const newSessionBtn = document.getElementById('newSessionBtn');
 const clearHistoryBtn = document.getElementById('clearHistoryBtn');
@@ -522,6 +526,7 @@ function setStatus(connected, text) {
 function setBusy(next) {
   busy = next;
   sendBtn.disabled = next;
+  stopBtn.disabled = !next;
   input.disabled = next;
   sendBtn.innerHTML = next ? '<span class="spin"></span>' : '▶';
 }
@@ -665,6 +670,17 @@ function onToolEnd(msg) {
   markStageForTool(msg.name);
 }
 
+function markRunningToolsStopped() {
+  document.querySelectorAll('.tool-card.running').forEach(card => {
+    card.className = 'tool-card stopped';
+    const badge = card.querySelector('.badge');
+    if (badge) {
+      badge.className = 'badge stopped';
+      badge.textContent = '已停止';
+    }
+  });
+}
+
 function markStageForTool(toolName) {
   const stage = STAGES[toolName] || 'verify';
   completedStages.add(stage);
@@ -734,6 +750,17 @@ function connect() {
       setBusy(false);
       saveSessions();
       input.focus();
+    } else if (msg.type === 'stopped') {
+      if (currentAssistantRaw) {
+        activeSession().messages.push({ role: 'assistant', content: currentAssistantRaw, at: Date.now() });
+      }
+      markRunningToolsStopped();
+      currentAssistant = null;
+      currentAssistantRaw = '';
+      setBusy(false);
+      saveSessions();
+      addMessage('assistant', msg.content || '扫描已停止');
+      input.focus();
     } else if (msg.type === 'info') {
       addMessage('assistant', msg.content || '');
     } else if (msg.type === 'error') {
@@ -760,7 +787,14 @@ function send() {
   ws.send(JSON.stringify({ content: text }));
 }
 
+function stopScan() {
+  if (!busy || !ws || ws.readyState !== WebSocket.OPEN) return;
+  stopBtn.disabled = true;
+  ws.send(JSON.stringify({ command: 'stop' }));
+}
+
 sendBtn.onclick = send;
+stopBtn.onclick = stopScan;
 input.addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();

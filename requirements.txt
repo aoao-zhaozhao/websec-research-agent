@@ -1,0 +1,13 @@
+# Web 框架
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+
+# DeepSeek API (兼容 OpenAI SDK)
+openai>=1.30.0
+
+# 环境变量管理
+python-dotenv>=1.0.0
+
+# 测试客户端
+websockets>=12.0

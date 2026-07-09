@@ -1,30 +1,41 @@
 # My Agent — Web 漏洞审查引擎
 
-一个基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。支持自动爬取、漏洞探测、安全头分析。通过 FastAPI + WebSocket 提供服务。
+基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。支持自动爬取、漏洞探测、RAG 知识库验证、安全头分析。通过 FastAPI + WebSocket 提供服务。
 
 ## 项目结构
 
 ```
 my-agent/
-├── .env                  # 环境变量（API Key 等）
-├── requirements.txt      # Python 依赖
+├── .env                        # 环境变量（API Key 等）
+├── requirements.txt            # Python 依赖
 ├── agent/
-│   ├── __init__.py
-│   └── core.py           # Agent 核心（LangGraph + 8 个扫描工具）
+│   ├── __init__.py             # 模块入口
+│   ├── config.py               # 配置管理 (AgentConfig)
+│   ├── prompts.py              # System Prompt (v0.5 三步工作流)
+│   ├── agent.py                # Agent 核心引擎 (LangGraph)
+│   ├── rag.py                  # RAG 知识库 (Chroma + Qwen3 两阶段检索)
+│   ├── core.py                 # 向后兼容重导出
+│   ├── tools/                  # 扫描工具集
+│   │   ├── http_tools.py       #   http_get / http_post
+│   │   ├── analysis_tools.py   #   analyze_headers / extract_forms / extract_links
+│   │   └── crawl_tools.py      #   crawl / sitemap / batch_scan
+│   ├── knowledge/              # 知识库 Markdown 源文件
+│   │   ├── owasp_top10.md      #   OWASP Top 10 (2021) 全 10 类 + 检测/修复
+│   │   ├── common_cves.md      #   精选 CVE 案例 (Log4Shell/Spring4Shell/XSS/SSRF...)
+│   │   └── remediation.md      #   代码级修复方案 (Python/Java/Nginx/Apache)
+│   └── models/                 # 本地模型 (.gitignore 排除)
+│       ├── qwen3-embedding-0.6b/   # 1024 维 Embedding
+│       └── qwen3-reranker-0.6b/   # CrossEncoder 精排
 ├── server/
-│   └── web_server.py     # FastAPI 服务器（WebSocket + REST + 前端页面）
+│   └── web_server.py           # FastAPI 服务器 (WebSocket + REST + 前端页面)
 ├── web/
-│   └── index.html        # 浏览器聊天页面
-└── test_client.py        # 命令行交互客户端（可选）
+│   └── index.html              # 浏览器聊天页面
+└── test_client.py              # 命令行交互客户端（可选）
 ```
 
 ## 快速开始
 
 ### 1. 配置 API Key
-
-```bash
-cp .env.example .env
-```
 
 编辑 `.env`，填入 DeepSeek API Key：
 
@@ -41,19 +52,33 @@ python -m venv myagent
 source myagent/Scripts/activate      # Windows Git Bash
 # 或 myagent\Scripts\activate.bat    # Windows CMD
 # 或 myagent\Scripts\Activate.ps1    # Windows PowerShell
-# deactivate #退出虚拟环境
+
 pip install -r requirements.txt
 ```
 
+### 3. 下载知识库模型
 
+RAG 模块使用 Qwen3-Embedding-0.6B + Qwen3-Reranker-0.6B 做两阶段检索：
 
-### 3. 启动服务
+```bash
+pip install modelscope
+python -c "
+from modelscope import snapshot_download
+snapshot_download('Qwen/Qwen3-Embedding-0.6B', cache_dir='agent/models')
+snapshot_download('Qwen/Qwen3-Reranker-0.6B', cache_dir='agent/models')
+"
+# 然后将 agent/models/models/Qwen--*/snapshots/master 移动到 agent/models/qwen3-*-0.6b/
+```
+
+> 模型共 ~2.4GB，首次启动时会自动索引知识库文档。
+
+### 4. 启动服务
 
 ```bash
 python server/web_server.py
 ```
 
-### 4. 开始扫描
+### 5. 开始扫描
 
 浏览器打开 **http://127.0.0.1:9120**，在输入框输入 URL：
 
@@ -66,7 +91,8 @@ Agent 会自动：
 2. sitemap 分类统计攻击面
 3. batch_scan 批量检查安全头
 4. 深入每个输入点注入 XSS/SQLi payload
-5. 输出完整安全审计报告（类型 + 风险等级 + 证据 + 修复建议）
+5. **search_knowledge 查知识库验证**，匹配 CVE/CVSS/修复方案
+6. 输出完整安全审计报告（类型 + 风险等级 + CVE + 证据 + 修复建议）
 
 也支持命令行模式：`python test_client.py`
 
@@ -91,6 +117,7 @@ Agent 会自动：
 | `crawl(url, depth, pages)` | BFS 爬虫，自动发现所有同域页面 + 16 个敏感路径探测 |
 | `sitemap(url)` | 攻击面分类统计（登录页/表单/API/管理后台/静态资源） |
 | `batch_scan(url)` | 批量扫描所有页面安全头 + 整体安全评级 |
+| `search_knowledge(query)` ⭐ | 两阶段 RAG 检索知识库（CVE/CVSS/修复方案） |
 
 ## 架构
 
@@ -106,10 +133,17 @@ Agent 会自动：
                │ 函数调用
                ▼
 ┌──────────────────────────────┐
-│   LangGraph Agent (推理面)    │  ← agent/core.py
+│   LangGraph Agent (推理面)    │  ← agent/agent.py
 │   • ChatOpenAI → DeepSeek    │
-│   • create_react_agent       │     LangGraph 管理 ReAct 循环
-│   • @tool 装饰器定义工具       │     后续直接接 RAG
+│   • create_react_agent       │
+│   • 9 个 @tool 工具           │
+│                              │
+│   ┌──────────────────────┐   │
+│   │   RAG 知识库          │   │  ← agent/rag.py
+│   │   Stage 1: Embedding  │   │     Qwen3-Embedding-0.6B
+│   │   Stage 2: Reranker   │   │     Qwen3-Reranker-0.6B
+│   │   Chroma 向量库        │   │
+│   └──────────────────────┘   │
 └──────────────────────────────┘
 ```
 
@@ -117,29 +151,19 @@ Agent 会自动：
 
 ### v0.1 — 基础框架
 - 手写 ReAct 循环，支持 DeepSeek 调用 + 2 个工具（计算器/时间）
-- 每条消息新建 Agent 实例，无记忆
 
 ### v0.2 — 多轮对话记忆
-- `self.messages` 跨 `run()` 累积
-- Agent 实例绑定到 WS 连接生命周期
-- 新增 `/clear` 指令
+- `self.messages` 跨 `run()` 累积，Agent 实例绑定 WS 连接生命周期
 
 ### v0.3 — LangGraph 重构 + Web 漏洞扫描
-- **引擎**: 手写 ReAct → `langgraph.prebuilt.create_react_agent`
-- **工具**: 手写 JSON → `@tool` 装饰器，新增 5 个扫描工具
-- **LLM**: 从 `AsyncOpenAI` 原始调用 → `ChatOpenAI`（LangChain 统一接口）
-- FastAPI 层 **零改动** —— 证明了分层解耦的价值
-
-| 维度 | v0.2 | v0.3 |
-|---|---|---|
-| Agent 循环 | 手写 for + tool_calls_map | LangGraph 自动 ReAct |
-| 工具定义 | 手写 JSON dict | `@tool` 装饰器 |
-| LLM 调用 | `AsyncOpenAI` 裸调 | `ChatOpenAI` |
-| 流式输出 | 自己拼 delta | `astream_events(version="v2")` |
-| 后续扩展 RAG | 需大改 | `create_retrieval_chain` 直接接 |
+- 手写 ReAct → `langgraph.prebuilt.create_react_agent`，新增 5 个扫描工具
 
 ### v0.4 — 深度爬取 + Web 前端
-- **3 个新工具**: `crawl`（BFS 爬虫 + 敏感路径探测）、`sitemap`（攻击面分类）、`batch_scan`（批量安全头检查）
-- **Web 前端**: `web/index.html` — 浏览器直接对话，流式显示，不需要双终端
-- **System Prompt**: 两步工作流（先爬取测绘攻击面 → 再深度扫描漏洞）
-- FastAPI 新增 `/` 路由返回前端页面
+- 新增 `crawl` / `sitemap` / `batch_scan`，浏览器前端直接对话
+
+### v0.5 — RAG 知识库 ⭐ 当前
+- **文件拆分**: `core.py` → `config.py` `prompts.py` `agent.py` `tools/` `rag.py`
+- **知识库**: OWASP Top 10 + 精选 CVE 案例 + 代码级修复方案 (3 个 Markdown → 29 个向量块)
+- **两阶段检索**: Qwen3-Embedding-0.6B 粗排 → Qwen3-Reranker-0.6B 精排
+- **新工具**: `search_knowledge(query)` — 语义检索知识库
+- **System Prompt**: 发现漏洞 → 先查知识库 → 带 CVE/CVSS/修复方案输出

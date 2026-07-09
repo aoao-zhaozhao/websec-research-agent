@@ -4,6 +4,10 @@ myagent/
 # 环境变量（含 API Key，绝对不能提交）
 .env
 
+# v0.5: 本地模型和向量库（体积大，可重建）
+agent/models/
+agent/chroma_db/
+
 # Python
 __pycache__/
 *.pyc

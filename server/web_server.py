@@ -1,9 +1,14 @@
 """
-FastAPI 服务器 —— Web 漏洞审查 Agent (v0.4)。
+FastAPI 服务器 —— Web 漏洞审查 Agent (v0.5)。
+
+v0.5: RAG 知识库
+  - 集成 Chroma 向量库 + search_knowledge 工具
+  - OWASP Top 10 / CVE 案例 / 修复方案知识库
+  - 模块化拆分: config.py / prompts.py / agent.py / tools/ / rag.py
 
 v0.4: 前端页面
   - / 直接返回聊天页面，无需额外终端
-  - WS 连接内复用同一個 Agent 实例
+  - WS 连接内复用同一个 Agent 实例
   - 流式输出通过 LangGraph astream_events 逐 token 推送
 
 用法:
@@ -31,7 +36,7 @@ from agent import Agent, AgentConfig
 
 # ─── FastAPI 应用 ──────────────────────────────────────
 
-app = FastAPI(title="Web Security Scanner", version="0.4.0")
+app = FastAPI(title="Web Security Scanner", version="0.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -147,8 +152,13 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "9120"))
 
-    print(f"🔍 Web 漏洞审查 Agent v0.4: http://{host}:{port}")
-    print(f"   浏览器打开上面的地址即可使用")
-    print(f"   API: /api/health | /api/config | /api/sessions")
+    # Windows 兼容: 避免 emoji 导致的 GBK 编码错误
+    import io, sys
+    if sys.stdout.encoding != 'utf-8':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+    print(f"[*] Web Security Scanner v0.5: http://{host}:{port}")
+    print(f"    Open the above URL in your browser")
+    print(f"    API: /api/health | /api/config | /api/sessions")
 
     uvicorn.run(app, host=host, port=port, log_level="info")

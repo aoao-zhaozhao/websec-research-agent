@@ -1,8 +1,10 @@
 # WebSec Research Agent — Web 漏洞审查引擎
 
-基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。覆盖 **SQLi / XSS / 命令注入 / SSTI / LFI / SSRF / JWT 攻击 / IDOR / 提权 / OOB 外带确认** 共 10 大攻击类别，34 个注册工具，80+ 内置 payload，8 个 RAG 知识库文件。通过 FastAPI + WebSocket 提供可观察的扫描阶段、实时工具轨迹和漏洞证据工作台。工具目录面板可一览全部能力。
+基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。覆盖 **SQLi / XSS / 命令注入 / SSTI / LFI / SSRF / JWT 攻击 / IDOR / 提权 / OOB 外带确认** 共 10 大攻击类别，38 个注册工具，80+ 内置 payload，8 个 RAG 知识库文件。通过 FastAPI + WebSocket 提供可观察的扫描阶段、实时工具轨迹和漏洞证据工作台。工具目录面板可一览全部能力。
 
 > **v1.4** 从 [Shannon OSS](https://github.com/keygraph/shannon)（AI 白盒渗透测试引擎）迁移了 SSRF、命令注入、SSTI、JWT 攻击、授权攻击和 OOB 盲确认等攻击模式。所有工具为 Python 原创实现，设计思路源自 Shannon 的提示词架构。
+>
+> **v1.5** 新增代码驱动的技能遥测、确定性生命周期、durable review job、lease/retry worker 和持久化维护指令，形成最小完整自进化闭环。
 
 ## 项目结构
 
@@ -19,8 +21,9 @@ my-agent/
 │   ├── core.py                 # 向后兼容重导出
 │   ├── scan_state.py           # 6 阶段扫描状态机
 │   ├── skill_manager.py        # 技能生命周期管理 ← v1.3
+│   ├── evolution/              # 遥测、确定性生命周期、Nudge Job
 │   ├── session_db.py           # SQLite 持久化 (FTS5) ← v1.3
-│   ├── tools/                  # 扫描工具集（34 个工具）
+│   ├── tools/                  # 扫描工具集（38 个工具）
 │   │   ├── http_tools.py       #   http_get / http_post / http_request
 │   │   ├── analysis_tools.py   #   analyze_headers / extract_forms / extract_links
 │   │   ├── crawl_tools.py      #   crawl / sitemap / batch_scan
@@ -33,7 +36,7 @@ my-agent/
 │   │   ├── jwt_attack_tools.py #   jwt_alg_none_attack / jwt_hmac_brute / jwt_key_confusion ← v1.4
 │   │   ├── authz_tools.py      #   test_idor / test_privilege_escalation / test_role_manipulation ← v1.4
 │   │   ├── oob_tools.py        #   generate_oob_payload / check_oob_callbacks ← v1.4
-│   │   ├── skill_tools.py      #   skill_list / skill_load / skill_create / skill_patch / scan_reflect
+│   │   ├── skill_tools.py      #   技能查看、使用、创建、维护、归档与恢复
 │   │   ├── structured.py       #   ToolResult 协议包装器
 │   │   ├── results.py          #   ToolResult / Finding / Evidence 数据模型
 │   │   └── http_client.py      #   统一请求、同域边界、超时、限速、重试
@@ -142,7 +145,7 @@ python server/web_server.py
 
 ### 5. 扫描能力
 
-Agent 覆盖 10 大攻击类别，34 个工具自动协作：
+Agent 覆盖 10 大攻击类别，38 个工具自动协作：
 
 | 阶段 | 执行的操作 |
 |---|---|
@@ -163,11 +166,12 @@ Agent 覆盖 10 大攻击类别，34 个工具自动协作：
 |---|---|---|
 | `/api/chat` | WebSocket | 核心对话——逐 token 流式输出，提供 `scan_started`、`stage_started`、`stage_progress`、`tool_started`、`tool_finished`、`finding_created`、`scan_finished` 事件 |
 | `/api/config` | GET/PUT | 查看/修改模型、thinking 开关、`high/max` 强度、最大步骤和会话历史窗口 |
-| `/api/tools` | GET | 工具目录——返回 34 个工具按 9 类别分组，含名称、描述、参数 Schema |
+| `/api/tools` | GET | 工具目录——返回 38 个工具按 9 类别分组，含名称、描述、参数 Schema |
+| `/api/evolution` | GET | 查看工具计数、review job、待处理指令和近期审查报告 |
 | `/api/sessions` | GET | 活跃连接数 |
 | `/api/health` | GET | 健康检查 |
 
-## 扫描工具（34 个）
+## 扫描工具（38 个）
 
 ### 🌐 HTTP 基础
 | 工具 | 说明 |
@@ -234,12 +238,18 @@ Agent 覆盖 10 大攻击类别，34 个工具自动协作：
 | 工具 | 说明 |
 |---|---|
 | `skill_list(category)` | 列出技能库中所有已沉淀的经验技能 |
+| `skill_view(name)` | 只查看技能并记录 view 遥测，不计为使用 |
 | `skill_load(name)` | 加载指定技能到当前扫描上下文 |
 | `skill_create(title, description, body, category, tags)` | 将成功经验沉淀为可复用技能 |
 | `skill_patch(name, old_text, new_text)` | 改进已有技能 |
+| `skill_pin(name, pinned)` | 设置或取消自动归档保护 |
+| `skill_archive(name, absorbed_into)` | 将 agent-created 技能软归档到 `.archive/` |
+| `skill_restore(name)` | 恢复已归档技能 |
 | `scan_reflect(target, findings_summary, successful_techniques, failed_attempts)` | 扫描后反思：分析得失并建议技能创建/更新 |
 
-> 加上 RAG 知识库的 `search_knowledge`，共 **34 个已注册工具**。点击工作台侧边栏 📦 按钮可查看完整工具目录。
+> `/api/tools` 暴露 **38 个基础工具**；RAG 初始化成功时，Agent 运行时还会动态加入 `search_knowledge`。点击工作台侧边栏 📦 按钮可查看基础工具目录。
+
+技能内容保存在 `agent/skills/`，可变遥测与生命周期状态保存在 `data/evolution.db`。业务工具每完成 10 次会持久化一个幂等 `skill_review` job；带 lease/retry 的 worker 自动审查结构化工具结果。发现未覆盖的 confirmed/likely 经验时，代码会持续向主 Agent 注入维护指令，直到成功创建/更新技能或明确反思为无新增。每轮结束还会由纯 Python 规则执行 `active → stale → archived` 流转。`bundled`、已 pin 或被保护引用的技能不会被自动归档。
 
 ## 架构
 
@@ -259,7 +269,7 @@ Agent 覆盖 10 大攻击类别，34 个工具自动协作：
 │   LangGraph Agent (推理面)    │  ← agent/agent.py
 │   • ChatOpenAI → DeepSeek    │
 │   • create_react_agent       │
-│   • 34 个 @tool 工具          │
+│   • 38 个 @tool 工具          │
 │                              │
 │   ┌──────────────────────┐   │
 │   │   RAG 知识库          │   │  ← agent/rag.py
@@ -327,7 +337,7 @@ Agent 覆盖 10 大攻击类别，34 个工具自动协作：
 - `SkillManager` + 5 个技能工具 + `SessionDB`（SQLite FTS5 + WAL）
 - 22 个注册工具
 
-### v1.4.0 — Shannon 迁移：全类别覆盖 ⭐ 当前
+### v1.4.0 — Shannon 迁移：全类别覆盖
 - **12 个新工具**: SSRF 检测 (2) + 命令注入 + SSTI + JWT 主动攻击 (3) + 授权攻击 (3) + OOB 外带确认 (2)
 - **Payload 库**: 3 类别 9 个 → 19 类别 80+ 个（新增盲注/UNION/NoSQL/SSTI/命令注入/SSRF/XXE 等）
 - **知识库**: 4 → 8 文件（新增 SSRF/命令注入/认证授权/SSTI）
@@ -336,3 +346,11 @@ Agent 覆盖 10 大攻击类别，34 个工具自动协作：
 - **System Prompt**: 重写为 v1.4 全类别工作流（步骤 1-33）
 - **设计来源**: Shannon OSS（AI 白盒渗透测试引擎）的攻击模式，100% Python 原创实现
 - **工具总数**: 34
+
+### v1.5.0 — 稳定自进化闭环 ⭐ 当前
+- SQLite 技能遥测：独立记录 use / view / patch 次数与时间
+- 代码级 Nudge：每 10 次业务工具调用创建 durable `skill_review` job
+- Worker 支持 claim、lease、retry、超时恢复和 dead-letter
+- 纯代码审查 confirmed / likely 证据，并持久化未完成维护指令
+- `active → stale → archived` 确定性生命周期、Pin、引用保护、软归档和恢复
+- 新增 `/api/evolution` 状态接口，基础工具总数提升至 38

@@ -1,8 +1,4 @@
-"""
-FastAPI server for My Agent Web Security Scanner v1.1.
-
-v1.1 adds observable scan lifecycle events while preserving v1.0 evidence.
-"""
+"""FastAPI server for WebSec Research Agent v1.5."""
 
 from __future__ import annotations
 
@@ -10,6 +6,7 @@ import json
 import os
 import sys
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -25,9 +22,33 @@ from agent import Agent, AgentConfig
 
 load_dotenv(PROJECT_ROOT / ".env")
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.5.0"
 
-app = FastAPI(title="Web Security Scanner", version=APP_VERSION)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Start a lightweight durable worker for review jobs and expired leases."""
+    from agent.evolution import get_evolution_worker
+
+    worker = get_evolution_worker()
+
+    async def worker_loop() -> None:
+        while True:
+            await asyncio.to_thread(worker.run_until_idle)
+            await asyncio.sleep(max(0.25, worker.config.worker_poll_seconds))
+
+    await asyncio.to_thread(worker.run_until_idle)
+    worker_task = asyncio.create_task(worker_loop())
+    try:
+        yield
+    finally:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(title="Web Security Scanner", version=APP_VERSION, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
@@ -273,6 +294,21 @@ async def health():
         "engine": "LangGraph",
         "version": APP_VERSION,
         "active_sessions": active_sessions,
+    }
+
+
+@app.get("/api/evolution")
+async def evolution_status():
+    """Expose bounded evolution state for operations and debugging."""
+    from agent.evolution import get_evolution_store
+
+    store = get_evolution_store()
+    jobs = store.list_jobs()
+    return {
+        "tool_calls_since_review": store.tool_counter(),
+        "pending_directive": store.pending_review(),
+        "jobs": jobs[-20:],
+        "reviews": store.list_reviews(limit=20),
     }
 
 

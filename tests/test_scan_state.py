@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agent.agent import Agent
 from agent.scan_state import ScanState, stage_for_tool, target_from_input
@@ -51,6 +51,7 @@ class ScanStateTests(unittest.TestCase):
 
 class _FakeGraph:
     async def astream_events(self, _input, **_kwargs):
+        self.last_input = _input
         yield {
             "event": "on_chat_model_stream",
             "data": {"chunk": SimpleNamespace(content="", additional_kwargs={"reasoning_content": "Inspect the target."})},
@@ -87,13 +88,22 @@ class AgentLifecycleEventTests(unittest.IsolatedAsyncioTestCase):
         agent = Agent.__new__(Agent)
         agent.config = SimpleNamespace(max_turns=4, history_message_limit=24, show_reasoning=True)
         agent.llm = object()
-        agent.messages = []
+        agent.messages = [SystemMessage(content="system")]
         agent._active_scan = None
         agent.last_scan = None
         agent._tools = lambda: []
         agent._build_llm = lambda: object()
+        agent.evolution = Mock()
+        agent.evolution.finalize_turn.return_value.to_dict.return_value = {
+            "tool_calls_since_review": 1,
+            "review_job": None,
+            "transitions": [],
+            "reviews": [],
+        }
+        agent.evolution.pending_directive.return_value = "review directive"
 
-        with patch("agent.agent.create_react_agent", return_value=_FakeGraph()):
+        graph = _FakeGraph()
+        with patch("agent.agent.create_react_agent", return_value=graph):
             events = [event async for event in agent.run_events("scan http://scanner.test")]
 
         event_types = [event["type"] for event in events]
@@ -109,6 +119,12 @@ class AgentLifecycleEventTests(unittest.IsolatedAsyncioTestCase):
         finished = events[-1]
         self.assertEqual(finding["finding"]["confidence"], "likely")
         self.assertEqual(finished["scan"]["status"], "completed")
+        call = agent.evolution.record_tool_completed.call_args
+        self.assertEqual(call.args[0], "crawl")
+        self.assertEqual(call.args[1]["status"], "ok")
+        self.assertEqual(call.kwargs["scan_id"], finished["scan"]["id"])
+        agent.evolution.finalize_turn.assert_called_once_with()
+        self.assertEqual(graph.last_input["messages"][1].content, "review directive")
 
 
 class AgentModelConfigurationTests(unittest.TestCase):

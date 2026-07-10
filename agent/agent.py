@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -9,6 +10,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
 from .config import AgentConfig
+from .evolution import EvolutionConfig, EvolutionCoordinator
 from .prompts import SYSTEM_PROMPT
 from .rag import create_search_knowledge_tool
 from .scan_state import ScanState, target_from_input
@@ -26,6 +28,16 @@ class Agent:
         self._search_knowledge_tool = None
         self._rag_manager = None
         self._init_rag()
+
+        self.evolution = EvolutionCoordinator(
+            EvolutionConfig(
+                skills_root=Path(self.config.skills_dir),
+                db_path=Path(self.config.evolution_db_path),
+                nudge_interval=self.config.skill_nudge_interval,
+                stale_after_days=self.config.skill_stale_after_days,
+                archive_after_days=self.config.skill_archive_after_days,
+            )
+        )
 
         self.agent = create_react_agent(self.llm, self._tools())
         self.messages = [SystemMessage(content=SYSTEM_PROMPT)]
@@ -106,6 +118,17 @@ class Agent:
             return text[:limit] + f"\n...[truncated {len(text) - limit} chars]"
         return text
 
+    def _finalize_evolution(self) -> dict[str, Any] | None:
+        coordinator = getattr(self, "evolution", None)
+        if coordinator is None:
+            return None
+        try:
+            return coordinator.finalize_turn().to_dict()
+        except Exception as exc:
+            # Skill maintenance must not change the scan's terminal status.
+            print(f"[Agent] evolution finalizer failed: {exc}")
+            return {"error": str(exc)}
+
     async def run_events(self, user_input: str) -> AsyncIterator[dict[str, Any]]:
         """
         Execute one turn and yield structured events.
@@ -119,14 +142,23 @@ class Agent:
         self.last_scan = scan
         self.messages.append(HumanMessage(content=user_input))
         self._trim_history()
+        invocation_messages = list(self.messages)
+        directive = self.evolution.pending_directive()
+        if directive and invocation_messages:
+            invocation_messages = [
+                invocation_messages[0],
+                SystemMessage(content=directive),
+                *invocation_messages[1:],
+            ]
         self.llm = self._build_llm()
         self.agent = create_react_agent(self.llm, self._tools())
 
         full_response: list[str] = []
+        evolution_finalized = False
         yield scan.started_event()
         try:
             async for event in self.agent.astream_events(
-                {"messages": list(self.messages)},
+                {"messages": invocation_messages},
                 config={"recursion_limit": self.config.max_turns},
                 version="v2",
             ):
@@ -169,6 +201,13 @@ class Agent:
                     yield scan.finish_tool(tool_name, run_id, result)
                     for finding_event in scan.finding_events(tool_name, result):
                         yield finding_event
+                    coordinator = getattr(self, "evolution", None)
+                    if coordinator is not None:
+                        coordinator.record_tool_completed(
+                            tool_name,
+                            result,
+                            scan_id=scan.scan_id,
+                        )
 
             response_text = "".join(full_response).strip()
             if response_text:
@@ -176,6 +215,14 @@ class Agent:
             else:
                 self.messages.append(AIMessage(content="扫描完成，请查看工具调用结果。"))
             self._trim_history()
+            maintenance = self._finalize_evolution()
+            evolution_finalized = True
+            if maintenance and (maintenance.get("review_job") or maintenance.get("transitions") or maintenance.get("reviews") or maintenance.get("error")):
+                yield {
+                    "type": "evolution_maintenance",
+                    "scan_id": scan.scan_id,
+                    **maintenance,
+                }
             for lifecycle_event in scan.finish("completed"):
                 yield lifecycle_event
         except Exception:
@@ -183,10 +230,20 @@ class Agent:
             if response_text:
                 self.messages.append(AIMessage(content=response_text))
                 self._trim_history()
+            maintenance = self._finalize_evolution()
+            evolution_finalized = True
+            if maintenance and (maintenance.get("review_job") or maintenance.get("transitions") or maintenance.get("reviews") or maintenance.get("error")):
+                yield {
+                    "type": "evolution_maintenance",
+                    "scan_id": scan.scan_id,
+                    **maintenance,
+                }
             for lifecycle_event in scan.finish("failed"):
                 yield lifecycle_event
             raise
         finally:
+            if not evolution_finalized:
+                self._finalize_evolution()
             self._active_scan = None
 
     async def run(self, user_input: str) -> AsyncIterator[str]:

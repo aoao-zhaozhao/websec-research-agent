@@ -9,7 +9,17 @@ from .static_tools import analyze_js, decode_jwt, discover_api, render_page
 from .lfi_tools import test_lfi_param
 from .verification_tools import verify_injection
 from .exploit_tools import css_exfil_payload, webhook_reconstruct
-from .skill_tools import skill_list, skill_load, skill_create, skill_patch, scan_reflect
+from .skill_tools import (
+    skill_archive,
+    skill_create,
+    skill_list,
+    skill_load,
+    skill_patch,
+    skill_pin,
+    skill_restore,
+    skill_view,
+    scan_reflect,
+)
 from .ssrf_tools import test_ssrf, probe_internal_port
 from .command_injection_tools import test_command_injection, test_ssti
 from .jwt_attack_tools import jwt_alg_none_attack, jwt_hmac_brute, jwt_key_confusion
@@ -61,9 +71,13 @@ BASE_TOOLS = [
         webhook_reconstruct,
         # ── 自进化技能 ──
         skill_list,
+        skill_view,
         skill_load,
         skill_create,
         skill_patch,
+        skill_pin,
+        skill_archive,
+        skill_restore,
         scan_reflect,
     )
 ]
@@ -99,9 +113,13 @@ __all__ = [
     "css_exfil_payload",
     "webhook_reconstruct",
     "skill_list",
+    "skill_view",
     "skill_load",
     "skill_create",
     "skill_patch",
+    "skill_pin",
+    "skill_archive",
+    "skill_restore",
     "scan_reflect",
     "BASE_TOOLS",
 ]

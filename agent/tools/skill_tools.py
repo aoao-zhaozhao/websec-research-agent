@@ -16,7 +16,12 @@ from typing import Any
 
 from langchain_core.tools import tool
 
-from ..skill_manager import CATEGORIES, VALID_STATES, get_skill_manager
+from ..skill_manager import (
+    CATEGORIES,
+    VALID_STATES,
+    SkillAlreadyExistsError,
+    get_skill_manager,
+)
 from .results import Evidence, Finding, ToolResult, error_result
 
 
@@ -119,6 +124,35 @@ def skill_load(name: str) -> str:
 
 
 @tool
+def skill_view(name: str) -> str:
+    """Inspect a skill without activating it or incrementing its use count.
+
+    Viewing is tracked separately so maintenance and curator code can enforce
+    read-before-write without treating inspection as successful reuse.
+
+    Parameters:
+        name: The skill name returned by skill_list.
+    """
+    mgr = get_skill_manager()
+    content = mgr.view(name.strip())
+    if content is None:
+        return error_result("skill_view", name, f"Skill '{name}' was not found").to_text()
+    meta = mgr.load_metadata(name.strip())
+    return ToolResult(
+        tool="skill_view",
+        target=name,
+        status="ok",
+        summary=f"Viewed skill '{name}'",
+        raw_excerpt=f"[skill_view] {name}\n{content[:6000]}",
+        data={
+            "name": name,
+            "content": content,
+            "view_count": meta.view_count if meta else 0,
+        },
+    ).to_text()
+
+
+@tool
 def skill_create(
     title: str,
     description: str,
@@ -150,13 +184,16 @@ def skill_create(
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
-    meta = mgr.create(
-        title=title.strip(),
-        description=description.strip()[:1024],
-        body=body.strip(),
-        category=cat,
-        tags=tag_list,
-    )
+    try:
+        meta = mgr.create(
+            title=title.strip(),
+            description=description.strip()[:1024],
+            body=body.strip(),
+            category=cat,
+            tags=tag_list,
+        )
+    except SkillAlreadyExistsError as exc:
+        return error_result("skill_create", title, exc).to_text()
 
     readable = (
         f"[skill_create] 技能已创建\n"
@@ -218,6 +255,73 @@ def skill_patch(name: str, old_text: str, new_text: str) -> str:
         summary=f"技能 '{name}' 已更新",
         raw_excerpt=readable,
         data={"success": True, "name": name},
+    ).to_text()
+
+
+@tool
+def skill_pin(name: str, pinned: bool = True) -> str:
+    """Pin or unpin a skill to protect it from automatic archival.
+
+    Parameters:
+        name: Skill name.
+        pinned: True to protect the skill, False to remove protection.
+    """
+    ok = get_skill_manager().pin(name.strip(), pinned)
+    if not ok:
+        return error_result("skill_pin", name, f"Skill '{name}' was not found").to_text()
+    action = "pinned" if pinned else "unpinned"
+    return ToolResult(
+        tool="skill_pin",
+        target=name,
+        status="ok",
+        summary=f"Skill '{name}' {action}",
+        raw_excerpt=f"[skill_pin] {name}: {action}",
+        data={"name": name, "pinned": pinned},
+    ).to_text()
+
+
+@tool
+def skill_archive(name: str, absorbed_into: str = "") -> str:
+    """Soft-archive an agent-created skill instead of deleting it.
+
+    Parameters:
+        name: Skill name.
+        absorbed_into: Optional umbrella skill that absorbed this skill.
+    """
+    ok = get_skill_manager().archive(name.strip(), absorbed_into.strip() or None)
+    if not ok:
+        return error_result(
+            "skill_archive",
+            name,
+            "Skill was not found or is protected by pin/source/reference policy",
+        ).to_text()
+    return ToolResult(
+        tool="skill_archive",
+        target=name,
+        status="ok",
+        summary=f"Skill '{name}' archived",
+        raw_excerpt=f"[skill_archive] {name}: archived and recoverable",
+        data={"name": name, "state": "archived", "absorbed_into": absorbed_into or None},
+    ).to_text()
+
+
+@tool
+def skill_restore(name: str) -> str:
+    """Restore a previously archived skill to active state.
+
+    Parameters:
+        name: Archived skill name.
+    """
+    ok = get_skill_manager().restore(name.strip())
+    if not ok:
+        return error_result("skill_restore", name, "Archived skill was not found or cannot be restored").to_text()
+    return ToolResult(
+        tool="skill_restore",
+        target=name,
+        status="ok",
+        summary=f"Skill '{name}' restored",
+        raw_excerpt=f"[skill_restore] {name}: active",
+        data={"name": name, "state": "active"},
     ).to_text()
 
 

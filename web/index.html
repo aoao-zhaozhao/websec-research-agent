@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Web Security Scanner v1.4</title>
+<title>Web Security Scanner v1.5</title>
 <style>
   :root {
     --bg: #111311;
@@ -582,10 +582,10 @@
     <div class="brand">
       <div>
         <h1>Web Security Scanner</h1>
-        <div class="version">v1.4</div>
+        <div class="version">v1.5</div>
       </div>
       <div class="brand-actions">
-        <button class="icon-btn" id="toolsBtn" title="工具目录 (34)">📦</button>
+        <button class="icon-btn" id="toolsBtn" title="工具目录 (38)">📦</button>
         <button class="icon-btn" id="settingsBtn" title="模型与思考设置">⚙</button>
         <button class="icon-btn" id="newSessionBtn" title="新建会话">+</button>
       </div>
@@ -1407,7 +1407,7 @@ function exportActiveSession() {
   const session = activeSession();
   const payload = {
     exported_at: new Date().toISOString(),
-    format: 'my-agent-scan-v1.4',
+    format: 'my-agent-scan-v1.5',
     session
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });

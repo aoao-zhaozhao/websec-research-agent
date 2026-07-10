@@ -38,6 +38,28 @@ class AgentConfig:
     reasoning_effort: str = field(default_factory=lambda: os.getenv("DEEPSEEK_REASONING_EFFORT", "high"))
     show_reasoning: bool = field(default_factory=lambda: _env_bool("DEEPSEEK_SHOW_REASONING", True))
 
+    # Skill evolution runtime
+    skill_nudge_interval: int = field(
+        default_factory=lambda: int(os.getenv("SKILL_NUDGE_INTERVAL", "10"))
+    )
+    skill_stale_after_days: int = field(
+        default_factory=lambda: int(os.getenv("SKILL_STALE_AFTER_DAYS", "30"))
+    )
+    skill_archive_after_days: int = field(
+        default_factory=lambda: int(os.getenv("SKILL_ARCHIVE_AFTER_DAYS", "90"))
+    )
+    skills_dir: str = field(
+        default_factory=lambda: os.getenv(
+            "AGENT_SKILLS_DIR", os.path.join(os.path.dirname(__file__), "skills")
+        )
+    )
+    evolution_db_path: str = field(
+        default_factory=lambda: os.getenv(
+            "EVOLUTION_DB_PATH",
+            os.path.join(os.path.dirname(__file__), "..", "data", "evolution.db"),
+        )
+    )
+
     # ── RAG 知识库 ──
     knowledge_dir: str = field(
         default_factory=lambda: os.path.join(os.path.dirname(__file__), "knowledge")

@@ -4,6 +4,7 @@ description: 利用 CSS 属性选择器逐字符外带 OTP/Token，绕过 CSP sc
 version: 1.0.0
 category: css_injection
 author: agent
+source: bundled
 tags:
   - css-injection
   - scriptless-xss
@@ -12,7 +13,6 @@ tags:
   - otp-theft
 created_at: "2026-07-10T00:00:00Z"
 updated_at: "2026-07-10T00:00:00Z"
-use_count: 0
 state: active
 ---
 

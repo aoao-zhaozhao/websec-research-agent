@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Web Security Scanner v0.8</title>
+<title>Web Security Scanner v1.1</title>
 <style>
   :root {
     --bg: #111311;
@@ -79,6 +79,7 @@
     line-height: 1.2;
     font-weight: 700;
   }
+  .brand-actions { display: flex; gap: 8px; }
   .version {
     color: var(--muted);
     font-size: 12px;
@@ -97,16 +98,23 @@
     padding: 10px;
   }
   .session {
-    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .session-main {
+    min-width: 0;
     text-align: left;
     padding: 10px;
-    margin-bottom: 8px;
     background: transparent;
   }
-  .session.active {
+  .session.active .session-main {
     background: var(--panel-2);
     border-color: #64705d;
   }
+  .session-actions { display: flex; gap: 4px; align-items: center; }
+  .session-actions .icon-btn { width: 30px; min-height: 30px; font-size: 13px; }
   .session-title {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -130,7 +138,7 @@
     overflow: hidden;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
-    background: linear-gradient(180deg, #171a16 0%, #111311 100%);
+    background: var(--bg);
   }
   .topbar {
     border-bottom: 1px solid var(--line);
@@ -202,6 +210,45 @@
     margin: 4px 0 10px;
     color: var(--soft);
   }
+  .rail-section + .rail-section { margin-top: 18px; }
+  .scan-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+    margin-bottom: 10px;
+  }
+  .scan-stat {
+    min-width: 0;
+    border: 1px solid var(--line);
+    background: #121512;
+    padding: 8px;
+  }
+  .scan-stat strong { display: block; font-size: 16px; line-height: 1.15; }
+  .scan-stat span { display: block; color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .scan-target {
+    color: var(--soft);
+    font: 12px "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin: 0 0 10px;
+  }
+  .stage-list { display: grid; gap: 5px; }
+  .stage-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 8px;
+    border-left: 3px solid var(--line);
+    background: #121512;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .stage-row.active { border-left-color: var(--amber); color: var(--text); }
+  .stage-row.completed { border-left-color: var(--green); color: var(--soft); }
+  .stage-row.stopped, .stage-row.failed { border-left-color: var(--red); color: #ffd2d2; }
+  .stage-state { color: var(--muted); font-size: 11px; }
   .empty {
     color: var(--muted);
     font-size: 13px;
@@ -247,12 +294,51 @@
     padding: 12px;
     border-radius: 6px;
   }
+  .assistant .bubble .table-wrap { overflow-x: auto; margin: 10px 0; }
+  .assistant .bubble table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .assistant .bubble th, .assistant .bubble td { border: 1px solid var(--line); padding: 7px 8px; text-align: left; vertical-align: top; }
+  .assistant .bubble th { background: #20241f; color: var(--soft); }
   .assistant .bubble code {
     background: #0d0f0d;
     border: 1px solid #2b312a;
     border-radius: 4px;
     padding: 1px 4px;
   }
+  .reasoning .bubble { background: #161a20; border-color: #394757; box-shadow: none; }
+  .reasoning summary { color: var(--blue); font-size: 13px; }
+  .reasoning-body {
+    margin-top: 9px;
+    max-height: 240px;
+    overflow: auto;
+    white-space: pre-wrap;
+    color: var(--soft);
+    font: 12px/1.55 "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  }
+  dialog {
+    width: min(460px, calc(100vw - 28px));
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 0;
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .62); }
+  .config-form { padding: 16px; display: grid; gap: 13px; }
+  .config-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .config-head h2 { margin: 0; font-size: 15px; }
+  .config-field { display: grid; gap: 6px; color: var(--soft); font-size: 13px; }
+  .config-field input, .config-field select {
+    min-height: 36px;
+    color: var(--text);
+    background: #0d0f0d;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 7px 9px;
+  }
+  .config-check { display: flex; align-items: center; gap: 8px; color: var(--soft); font-size: 13px; }
+  .config-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+  .config-status { min-height: 16px; color: var(--muted); font-size: 12px; }
   .tool-card {
     border: 1px solid var(--line);
     background: var(--panel);
@@ -320,6 +406,10 @@
   .finding-card.high { border-left-color: var(--red); }
   .finding-card.medium { border-left-color: var(--amber); }
   .finding-card.low { border-left-color: var(--green); }
+  .finding-card.info { border-left-color: var(--blue); }
+  .finding-card .finding-meta { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  .finding-card summary { color: var(--soft); }
+  .finding-card .tool-body { max-height: 180px; }
   .composer {
     border-top: 1px solid var(--line);
     padding: 12px 18px;
@@ -357,8 +447,8 @@
   @media (max-width: 980px) {
     .app { grid-template-columns: 1fr; }
     .sidebar { display: none; }
-    .workspace { grid-template-columns: 1fr; }
-    .rail { display: none; }
+    .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; overflow-y: auto; }
+    .rail { border-left: 0; border-top: 1px solid var(--line); max-height: 44vh; }
     .topbar { align-items: flex-start; flex-direction: column; }
   }
   @media (max-width: 620px) {
@@ -374,12 +464,16 @@
     <div class="brand">
       <div>
         <h1>Web Security Scanner</h1>
-        <div class="version">v0.8</div>
+        <div class="version">v1.1</div>
       </div>
-      <button class="icon-btn" id="newSessionBtn" title="新建会话">+</button>
+      <div class="brand-actions">
+        <button class="icon-btn" id="settingsBtn" title="模型与思考设置">⚙</button>
+        <button class="icon-btn" id="newSessionBtn" title="新建会话">+</button>
+      </div>
     </div>
     <div class="sessions" id="sessions"></div>
     <div class="side-footer">
+      <button id="exportSessionBtn" title="导出当前扫描">⇩</button>
       <button id="clearHistoryBtn" title="清空本地会话">清空历史</button>
     </div>
   </aside>
@@ -387,8 +481,9 @@
   <main class="main">
     <header class="topbar">
       <div class="steps" id="steps">
-        <span class="step" data-stage="map">测绘</span>
-        <span class="step" data-stage="static">静态分析</span>
+        <span class="step" data-stage="scope">范围</span>
+        <span class="step" data-stage="crawl">爬取</span>
+        <span class="step" data-stage="enumerate">枚举</span>
         <span class="step" data-stage="verify">验证</span>
         <span class="step" data-stage="knowledge">知识库</span>
         <span class="step" data-stage="report">报告</span>
@@ -396,6 +491,7 @@
       <div class="status">
         <span class="dot" id="statusDot"></span>
         <span id="statusText">未连接</span>
+        <span id="scanElapsed"></span>
       </div>
     </header>
 
@@ -404,10 +500,18 @@
         <div class="empty">输入目标 URL 或审计问题后开始。</div>
       </div>
       <aside class="rail">
-        <h2>工具轨迹</h2>
-        <div id="toolRail" class="empty">等待扫描任务。</div>
-        <h2>风险摘录</h2>
-        <div id="findingRail" class="empty">报告生成后显示。</div>
+        <section class="rail-section">
+          <h2>扫描状态</h2>
+          <div id="scanStateRail" class="empty">等待扫描任务。</div>
+        </section>
+        <section class="rail-section">
+          <h2>漏洞证据</h2>
+          <div id="findingRail" class="empty">等待结构化发现。</div>
+        </section>
+        <section class="rail-section">
+          <h2>工具轨迹</h2>
+          <div id="toolRail" class="empty">等待扫描任务。</div>
+        </section>
       </aside>
     </section>
 
@@ -422,24 +526,58 @@
   </main>
 </div>
 
+<dialog id="configDialog">
+  <form class="config-form" id="configForm">
+    <div class="config-head">
+      <h2>模型与思考</h2>
+      <button class="icon-btn" type="button" id="closeConfigBtn" title="关闭">×</button>
+    </div>
+    <label class="config-field">模型
+      <select id="modelSelect">
+        <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
+        <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
+      </select>
+    </label>
+    <label class="config-check"><input id="thinkingEnabled" type="checkbox">启用深度思考</label>
+    <label class="config-field">思考强度
+      <select id="reasoningEffort">
+        <option value="high">high</option>
+        <option value="max">max</option>
+      </select>
+    </label>
+    <label class="config-check"><input id="showReasoning" type="checkbox">显示思考过程</label>
+    <label class="config-field">单次扫描最大步骤
+      <input id="maxTurns" type="number" min="10" max="240" step="1">
+    </label>
+    <label class="config-field">会话历史消息数
+      <input id="historyMessageLimit" type="number" min="2" max="100" step="1">
+    </label>
+    <div id="configStatus" class="config-status"></div>
+    <div class="config-actions">
+      <button type="button" id="cancelConfigBtn">取消</button>
+      <button type="submit" id="saveConfigBtn">保存</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/chat`;
-const STORAGE_KEY = 'my-agent-v07-sessions';
-const STAGES = {
-  crawl: 'map',
-  sitemap: 'map',
-  analyze_js: 'static',
-  discover_api: 'static',
-  render_page: 'static',
-  decode_jwt: 'verify',
-  test_lfi_param: 'verify',
-  http_get: 'verify',
-  http_post: 'verify',
-  batch_scan: 'verify',
-  analyze_headers: 'verify',
-  extract_forms: 'map',
-  extract_links: 'map',
-  search_knowledge: 'knowledge'
+const STORAGE_KEY = 'my-agent-v11-sessions';
+const LEGACY_STORAGE_KEY = 'my-agent-v07-sessions';
+const STAGE_LABELS = {
+  scope: '范围',
+  crawl: '爬取',
+  enumerate: '枚举',
+  verify: '验证',
+  knowledge: '知识库',
+  report: '报告'
+};
+const STAGE_STATUS_LABELS = {
+  pending: '等待',
+  active: '进行中',
+  completed: '完成',
+  stopped: '已停止',
+  failed: '失败'
 };
 
 let ws;
@@ -448,8 +586,9 @@ let sessions = loadSessions();
 let activeId = sessions[0]?.id || null;
 let currentAssistant = null;
 let currentAssistantRaw = '';
+let currentReasoning = null;
+let currentReasoningRaw = '';
 let toolCards = new Map();
-let completedStages = new Set();
 
 const conversation = document.getElementById('conversation');
 const sessionsEl = document.getElementById('sessions');
@@ -460,9 +599,24 @@ const sendBtn = document.getElementById('sendBtn');
 const stopBtn = document.getElementById('stopBtn');
 const clearBtn = document.getElementById('clearBtn');
 const newSessionBtn = document.getElementById('newSessionBtn');
+const settingsBtn = document.getElementById('settingsBtn');
 const clearHistoryBtn = document.getElementById('clearHistoryBtn');
+const exportSessionBtn = document.getElementById('exportSessionBtn');
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
+const scanElapsed = document.getElementById('scanElapsed');
+const scanStateRail = document.getElementById('scanStateRail');
+const configDialog = document.getElementById('configDialog');
+const configForm = document.getElementById('configForm');
+const closeConfigBtn = document.getElementById('closeConfigBtn');
+const cancelConfigBtn = document.getElementById('cancelConfigBtn');
+const modelSelect = document.getElementById('modelSelect');
+const thinkingEnabled = document.getElementById('thinkingEnabled');
+const reasoningEffort = document.getElementById('reasoningEffort');
+const showReasoning = document.getElementById('showReasoning');
+const maxTurns = document.getElementById('maxTurns');
+const historyMessageLimit = document.getElementById('historyMessageLimit');
+const configStatus = document.getElementById('configStatus');
 
 if (!activeId) {
   activeId = createSession().id;
@@ -470,8 +624,15 @@ if (!activeId) {
 
 function loadSessions() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed : [];
+    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY) || '[]';
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(session => ({
+      ...session,
+      messages: Array.isArray(session.messages) ? session.messages : [],
+      tools: Array.isArray(session.tools) ? session.tools : [],
+      scan: session.scan || null
+    }));
   } catch {
     return [];
   }
@@ -488,7 +649,8 @@ function createSession() {
     title: '新扫描',
     createdAt: Date.now(),
     messages: [],
-    tools: []
+    tools: [],
+    scan: null
   };
   sessions.unshift(session);
   saveSessions();
@@ -514,18 +676,62 @@ function escapeHtml(value) {
 }
 
 function renderMarkdown(text) {
-  let html = escapeHtml(text);
-  html = html.replace(/```([\s\S]*?)```/g, (_, code) => `<pre><code>${code.trim()}</code></pre>`);
-  html = html.replace(/^### (.*)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^## (.*)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^# (.*)$/gm, '<h1>$1</h1>');
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/^- (.*)$/gm, '<li>$1</li>');
-  html = html.replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>');
-  html = html.replace(/\n{2,}/g, '</p><p>');
-  html = html.replace(/\n/g, '<br>');
-  return `<p>${html}</p>`.replaceAll('<p><h', '<h').replaceAll('</h1></p>', '</h1>').replaceAll('</h2></p>', '</h2>').replaceAll('</h3></p>', '</h3>');
+  const lines = String(text || '').replaceAll('\r\n', '\n').split('\n');
+  const html = [];
+  let paragraph = [];
+  let list = [];
+  const inline = value => escapeHtml(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  const flushParagraph = () => {
+    if (paragraph.length) html.push(`<p>${paragraph.map(inline).join('<br>')}</p>`);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (list.length) html.push(`<ul>${list.map(item => `<li>${inline(item)}</li>`).join('')}</ul>`);
+    list = [];
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.startsWith('```')) {
+      flushParagraph(); flushList();
+      const code = [];
+      while (++index < lines.length && !lines[index].startsWith('```')) code.push(lines[index]);
+      html.push(`<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`);
+      continue;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph(); flushList();
+      const level = heading[1].length;
+      html.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+    if (/^[-*]\s+/.test(line)) {
+      flushParagraph();
+      list.push(line.replace(/^[-*]\s+/, ''));
+      continue;
+    }
+    if (/^\|.+\|\s*$/.test(line) && /^\|?\s*:?-{3,}/.test(lines[index + 1] || '')) {
+      flushParagraph(); flushList();
+      const cells = value => value.trim().replace(/^\||\|$/g, '').split('|').map(cell => cell.trim());
+      const headers = cells(line);
+      index += 2;
+      const rows = [];
+      while (index < lines.length && /^\|.+\|\s*$/.test(lines[index])) rows.push(cells(lines[index++]));
+      index -= 1;
+      html.push(`<div class="table-wrap"><table><thead><tr>${headers.map(cell => `<th>${inline(cell)}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${headers.map((_, cell) => `<td>${inline(row[cell] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph(); flushList();
+      continue;
+    }
+    flushList();
+    paragraph.push(line);
+  }
+  flushParagraph(); flushList();
+  return html.join('');
 }
 
 function setStatus(connected, text) {
@@ -559,6 +765,32 @@ function addMessage(role, content, persist = true) {
   return bubble;
 }
 
+function appendReasoning(content) {
+  if (!content) return;
+  if (!currentReasoning) {
+    const wrap = document.createElement('div');
+    wrap.className = 'message assistant reasoning';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    const details = document.createElement('details');
+    details.open = true;
+    details.innerHTML = '<summary>模型思考</summary><div class="reasoning-body"></div>';
+    bubble.appendChild(details);
+    wrap.appendChild(bubble);
+    conversation.appendChild(wrap);
+    currentReasoning = details.querySelector('.reasoning-body');
+    currentReasoningRaw = '';
+  }
+  currentReasoningRaw += content;
+  currentReasoning.textContent = currentReasoningRaw;
+  conversation.scrollTop = conversation.scrollHeight;
+}
+
+function resetReasoning() {
+  currentReasoning = null;
+  currentReasoningRaw = '';
+}
+
 function renderConversation() {
   conversation.innerHTML = '';
   const session = activeSession();
@@ -568,14 +800,18 @@ function renderConversation() {
     session.messages.forEach(msg => addMessage(msg.role, msg.content, false));
   }
   renderToolHistory();
-  renderFindingCards(session.messages.at(-1)?.content || '');
+  renderFindingCards(session.scan?.findings || []);
+  renderScanState(session.scan);
+  updateStages(session.scan);
 }
 
 function renderSessions() {
   sessionsEl.innerHTML = '';
   sessions.forEach(session => {
+    const row = document.createElement('div');
+    row.className = `session ${session.id === activeId ? 'active' : ''}`;
     const btn = document.createElement('button');
-    btn.className = `session ${session.id === activeId ? 'active' : ''}`;
+    btn.className = 'session-main';
     btn.innerHTML = `
       <div class="session-title">${escapeHtml(session.title)}</div>
       <div class="session-meta">${new Date(session.createdAt).toLocaleString()}</div>
@@ -585,12 +821,25 @@ function renderSessions() {
       currentAssistant = null;
       currentAssistantRaw = '';
       toolCards.clear();
-      completedStages.clear();
       renderSessions();
       renderConversation();
-      updateStages();
     };
-    sessionsEl.appendChild(btn);
+    const actions = document.createElement('div');
+    actions.className = 'session-actions';
+    actions.innerHTML = `
+      <button class="icon-btn" title="重命名">✎</button>
+      <button class="icon-btn" title="删除">×</button>
+    `;
+    actions.children[0].onclick = event => {
+      event.stopPropagation();
+      renameSession(session.id);
+    };
+    actions.children[1].onclick = event => {
+      event.stopPropagation();
+      deleteSession(session.id);
+    };
+    row.append(btn, actions);
+    sessionsEl.appendChild(row);
   });
 }
 
@@ -612,14 +861,15 @@ function renderToolHistory() {
 }
 
 function buildToolCard(tool) {
-  const state = tool.output ? (tool.result?.status === 'error' ? 'stopped' : 'done') : 'running';
+  const state = tool.output ? (tool.result?.status === 'error' ? 'error' : 'done') : 'running';
+  const duration = tool.durationMs != null ? ` · ${formatDuration(tool.durationMs)}` : '';
   const card = document.createElement('div');
   card.className = `tool-card ${state}`;
   card.dataset.id = tool.id;
   card.innerHTML = `
     <div class="tool-head">
-      <div class="tool-name">${escapeHtml(tool.name)}</div>
-      <span class="badge ${state === 'done' ? 'done' : ''}">${state === 'done' ? '完成' : '执行中'}</span>
+      <div class="tool-name">${escapeHtml(tool.name)}${duration}</div>
+      <span class="badge ${state}">${state === 'done' ? '完成' : state === 'error' ? '失败' : '执行中'}</span>
     </div>
     <details>
       <summary>参数</summary>
@@ -646,13 +896,20 @@ function onToolStart(msg) {
     toolRail.className = '';
     toolRail.innerHTML = '';
   }
-  const tool = { id: msg.id || `${msg.name}-${Date.now()}`, name: msg.name, input: msg.input, output: '', result: null };
+  const tool = {
+    id: msg.id || `${msg.name}-${Date.now()}`,
+    name: msg.name,
+    stage: msg.stage || '',
+    input: msg.input,
+    output: '',
+    result: null,
+    startedAt: Date.now()
+  };
   activeSession().tools.push(tool);
   saveSessions();
   const card = buildToolCard(tool);
   toolRail.prepend(card);
   toolCards.set(tool.id, card);
-  markStageForTool(tool.name);
 }
 
 function onToolEnd(msg) {
@@ -661,15 +918,16 @@ function onToolEnd(msg) {
   if (sessionTool) {
     sessionTool.output = msg.output || '';
     sessionTool.result = msg.result || null;
+    sessionTool.finishedAt = Date.now();
     saveSessions();
   }
   const card = toolCards.get(id);
   if (card) {
     const failed = msg.result?.status === 'error';
-    card.className = `tool-card ${failed ? 'stopped' : 'done'}`;
+    card.className = `tool-card ${failed ? 'error' : 'done'}`;
     const badge = card.querySelector('.badge');
     if (badge) {
-      badge.className = `badge ${failed ? 'stopped' : 'done'}`;
+      badge.className = `badge ${failed ? 'error' : 'done'}`;
       badge.textContent = failed ? '失败' : '完成';
     }
     if (!card.querySelector('.result-details')) {
@@ -686,7 +944,6 @@ function onToolEnd(msg) {
       card.appendChild(details);
     }
   }
-  markStageForTool(msg.name);
 }
 
 function markRunningToolsStopped() {
@@ -700,38 +957,183 @@ function markRunningToolsStopped() {
   });
 }
 
-function markStageForTool(toolName) {
-  const stage = STAGES[toolName] || 'verify';
-  completedStages.add(stage);
-  updateStages(stage);
-}
-
-function updateStages(activeStage = null) {
+function updateStages(scan = activeSession().scan) {
   document.querySelectorAll('.step').forEach(step => {
     const stage = step.dataset.stage;
     step.className = 'step';
-    if (completedStages.has(stage)) step.classList.add('done');
-    if (stage === activeStage) step.classList.add('active');
+    const status = scan?.stages?.[stage];
+    if (status === 'completed') step.classList.add('done');
+    if (status === 'active') step.classList.add('active');
   });
 }
 
-function renderFindingCards(text) {
+function formatDuration(milliseconds) {
+  const seconds = Math.max(0, Math.floor((milliseconds || 0) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes}m ${String(seconds % 60).padStart(2, '0')}s` : `${seconds}s`;
+}
+
+function renderScanState(scan) {
+  if (!scan) {
+    scanStateRail.className = 'empty';
+    scanStateRail.textContent = '等待扫描任务。';
+    scanElapsed.textContent = '';
+    return;
+  }
+  const elapsed = scan.status === 'running'
+    ? Date.now() - (scan.started_at || Date.now())
+    : scan.elapsed_ms || 0;
+  scanElapsed.textContent = formatDuration(elapsed);
+  const rows = Object.entries(STAGE_LABELS).map(([stage, label]) => {
+    const status = scan.stages?.[stage] || 'pending';
+    return `<div class="stage-row ${status}"><span>${label}</span><span class="stage-state">${STAGE_STATUS_LABELS[status] || status}</span></div>`;
+  }).join('');
+  scanStateRail.className = '';
+  scanStateRail.innerHTML = `
+    <div class="scan-target">${escapeHtml(scan.target || '未识别目标')}</div>
+    <div class="scan-summary">
+      <div class="scan-stat"><strong>${scan.tool_count || 0}</strong><span>工具</span></div>
+      <div class="scan-stat"><strong>${scan.finding_count || 0}</strong><span>发现</span></div>
+      <div class="scan-stat"><strong>${scan.error_count || 0}</strong><span>错误</span></div>
+    </div>
+    <div class="stage-list">${rows}</div>
+  `;
+}
+
+function renderFindingCards(findings) {
   findingRail.innerHTML = '';
-  const source = text || '';
-  const lines = source.split(/\n/).filter(line => /高危|中危|低危|LFI|文件包含|SQL|XSS|JWT|信息泄露|安全头/.test(line));
-  if (!lines.length) {
+  if (!Array.isArray(findings) || !findings.length) {
     findingRail.className = 'empty';
-    findingRail.textContent = '报告生成后显示。';
+    findingRail.textContent = '等待结构化发现。';
     return;
   }
   findingRail.className = '';
-  lines.slice(0, 8).forEach(line => {
+  findings.slice(0, 20).forEach(item => {
+    const finding = item.finding || item;
+    const evidence = finding.evidence || [];
+    const reproduction = finding.reproduction || [];
     const card = document.createElement('div');
-    const level = /高危|严重/.test(line) ? 'high' : /中危/.test(line) ? 'medium' : /低危/.test(line) ? 'low' : '';
+    const level = finding.severity || 'info';
     card.className = `finding-card ${level}`;
-    card.textContent = line.replace(/^[-*\s]+/, '').trim();
+    card.innerHTML = `
+      <strong>${escapeHtml(finding.title || '未命名发现')}</strong>
+      <div class="finding-meta">${escapeHtml(finding.category || 'observation')} · ${escapeHtml(finding.confidence || 'info')}</div>
+      <details><summary>证据与复现</summary><div class="tool-body">${escapeHtml(formatPayload({ evidence, reproduction }))}</div></details>
+    `;
     findingRail.appendChild(card);
   });
+}
+
+function applyScanSnapshot(snapshot) {
+  if (!snapshot || !snapshot.id) return null;
+  const session = activeSession();
+  const previous = session.scan?.id === snapshot.id ? session.scan : null;
+  session.scan = {
+    ...snapshot,
+    findings: previous?.findings || []
+  };
+  renderScanState(session.scan);
+  updateStages(session.scan);
+  return session.scan;
+}
+
+function onScanStarted(msg) {
+  const session = activeSession();
+  session.tools = [];
+  session.scan = { ...(msg.scan || {}), findings: [] };
+  toolCards.clear();
+  renderToolHistory();
+  renderScanState(session.scan);
+  updateStages(session.scan);
+  saveSessions();
+}
+
+function onStageEvent(msg) {
+  applyScanSnapshot(msg.scan);
+  if (msg.type === 'stage_progress' && msg.duration_ms != null && msg.run_id) {
+    const tool = activeSession().tools.find(item => item.id === msg.run_id);
+    if (tool) {
+      tool.durationMs = msg.duration_ms;
+      const previous = toolCards.get(msg.run_id);
+      if (previous) {
+        const replacement = buildToolCard(tool);
+        previous.replaceWith(replacement);
+        toolCards.set(msg.run_id, replacement);
+      }
+    }
+  }
+  saveSessions();
+}
+
+function onFindingCreated(msg) {
+  const scan = applyScanSnapshot(msg.scan);
+  if (!scan || !msg.finding) return;
+  if (!scan.findings.some(item => item.id === msg.finding_id)) {
+    scan.findings.push({ id: msg.finding_id, tool: msg.tool, finding: msg.finding });
+  }
+  renderFindingCards(scan.findings);
+  saveSessions();
+}
+
+function onScanFinished(msg) {
+  const scan = applyScanSnapshot(msg.scan);
+  if (scan?.status === 'stopped') markRunningToolsStopped();
+  saveSessions();
+}
+
+function syncThinkingControls() {
+  reasoningEffort.disabled = !thinkingEnabled.checked;
+  showReasoning.disabled = !thinkingEnabled.checked;
+}
+
+async function loadConfig() {
+  try {
+    const response = await fetch('/api/config');
+    if (!response.ok) throw new Error('无法读取配置');
+    const config = await response.json();
+    if (![...modelSelect.options].some(option => option.value === config.model)) {
+      const option = document.createElement('option');
+      option.value = config.model;
+      option.textContent = config.model;
+      modelSelect.appendChild(option);
+    }
+    modelSelect.value = config.model;
+    thinkingEnabled.checked = Boolean(config.thinking_enabled);
+    reasoningEffort.value = config.reasoning_effort || 'high';
+    showReasoning.checked = Boolean(config.show_reasoning);
+    maxTurns.value = config.max_turns || 120;
+    historyMessageLimit.value = config.history_message_limit || 24;
+    syncThinkingControls();
+    configStatus.textContent = '';
+  } catch (error) {
+    configStatus.textContent = error.message || '配置读取失败';
+  }
+}
+
+async function saveConfig(event) {
+  event.preventDefault();
+  const payload = {
+    model: modelSelect.value,
+    thinking_enabled: thinkingEnabled.checked,
+    reasoning_effort: reasoningEffort.value,
+    show_reasoning: showReasoning.checked,
+    max_turns: Number(maxTurns.value),
+    history_message_limit: Number(historyMessageLimit.value)
+  };
+  configStatus.textContent = '正在保存…';
+  try {
+    const response = await fetch('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || '配置保存失败');
+    configStatus.textContent = '已保存，将在下一次扫描生效。';
+    setTimeout(() => configDialog.close(), 500);
+  } catch (error) {
+    configStatus.textContent = error.message || '配置保存失败';
+  }
 }
 
 function connect() {
@@ -742,49 +1144,65 @@ function connect() {
     setBusy(false);
     setTimeout(connect, 2500);
   };
-  ws.onerror = () => setStatus(false, '连接错误');
-  ws.onmessage = event => {
-    const msg = JSON.parse(event.data);
-    if (msg.type === 'token') {
-      if (!currentAssistant) {
+    ws.onerror = () => setStatus(false, '连接错误');
+    ws.onmessage = event => {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'scan_started') {
+        onScanStarted(msg);
+      } else if (msg.type === 'stage_started' || msg.type === 'stage_progress') {
+        onStageEvent(msg);
+      } else if (msg.type === 'finding_created') {
+        onFindingCreated(msg);
+      } else if (msg.type === 'scan_finished') {
+        onScanFinished(msg);
+      } else if (msg.type === 'reasoning') {
+        appendReasoning(msg.content || '');
+      } else if (msg.type === 'token') {
+        if (!currentAssistant) {
         currentAssistantRaw = '';
         currentAssistant = addMessage('assistant', '', false);
       }
       currentAssistantRaw += msg.content || '';
       currentAssistant.innerHTML = renderMarkdown(currentAssistantRaw);
       conversation.scrollTop = conversation.scrollHeight;
-    } else if (msg.type === 'tool_start') {
-      onToolStart(msg);
-    } else if (msg.type === 'tool_end') {
-      onToolEnd(msg);
-    } else if (msg.type === 'done') {
-      if (currentAssistantRaw) {
-        activeSession().messages.push({ role: 'assistant', content: currentAssistantRaw, at: Date.now() });
-        renderFindingCards(currentAssistantRaw);
-      }
-      completedStages.add('report');
-      updateStages('report');
-      currentAssistant = null;
-      currentAssistantRaw = '';
-      setBusy(false);
+      } else if (msg.type === 'tool_started') {
+        onToolStart(msg);
+      } else if (msg.type === 'tool_finished') {
+        onToolEnd(msg);
+      } else if (msg.type === 'done') {
+        if (currentAssistantRaw) {
+          activeSession().messages.push({ role: 'assistant', content: currentAssistantRaw, at: Date.now() });
+        }
+        currentAssistant = null;
+        currentAssistantRaw = '';
+        resetReasoning();
+        setBusy(false);
       saveSessions();
       input.focus();
-    } else if (msg.type === 'stopped') {
+      } else if (msg.type === 'stopped') {
       if (currentAssistantRaw) {
         activeSession().messages.push({ role: 'assistant', content: currentAssistantRaw, at: Date.now() });
       }
-      markRunningToolsStopped();
-      currentAssistant = null;
-      currentAssistantRaw = '';
-      setBusy(false);
+        markRunningToolsStopped();
+        currentAssistant = null;
+        currentAssistantRaw = '';
+        resetReasoning();
+        setBusy(false);
       saveSessions();
-      addMessage('assistant', msg.content || '扫描已停止');
+        addMessage('assistant', msg.content || '扫描已停止');
       input.focus();
     } else if (msg.type === 'info') {
       addMessage('assistant', msg.content || '');
-    } else if (msg.type === 'error') {
-      addMessage('assistant', `错误：${msg.content || 'unknown error'}`);
-      setBusy(false);
+      } else if (msg.type === 'error') {
+        if (currentAssistantRaw) {
+          activeSession().messages.push({ role: 'assistant', content: currentAssistantRaw, at: Date.now() });
+          saveSessions();
+        }
+        currentAssistant = null;
+        currentAssistantRaw = '';
+        resetReasoning();
+        addMessage('assistant', `错误：${msg.content || 'unknown error'}`);
+        setBusy(false);
     }
   };
 }
@@ -800,9 +1218,13 @@ function send() {
   input.value = '';
   currentAssistant = null;
   currentAssistantRaw = '';
-  completedStages.clear();
-  updateStages();
+  resetReasoning();
+  session.scan = null;
+  session.tools = [];
+  renderScanState(null);
+  updateStages(null);
   setBusy(true);
+  saveSessions();
   ws.send(JSON.stringify({ content: text }));
 }
 
@@ -812,8 +1234,56 @@ function stopScan() {
   ws.send(JSON.stringify({ command: 'stop' }));
 }
 
+function renameSession(sessionId) {
+  const session = sessions.find(item => item.id === sessionId);
+  if (!session) return;
+  const title = window.prompt('扫描名称', session.title);
+  if (title == null) return;
+  const normalized = title.trim().slice(0, 80);
+  if (!normalized) return;
+  session.title = normalized;
+  saveSessions();
+}
+
+function deleteSession(sessionId) {
+  const session = sessions.find(item => item.id === sessionId);
+  if (!session || !window.confirm(`删除“${session.title}”？`)) return;
+  sessions = sessions.filter(item => item.id !== sessionId);
+  if (!sessions.length) {
+    activeId = createSession().id;
+  } else if (activeId === sessionId) {
+    activeId = sessions[0].id;
+  }
+  saveSessions();
+  renderConversation();
+}
+
+function exportActiveSession() {
+  const session = activeSession();
+  const payload = {
+    exported_at: new Date().toISOString(),
+    format: 'my-agent-scan-v1.1',
+    session
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `my-agent-scan-${new Date().toISOString().replaceAll(':', '-')}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 sendBtn.onclick = send;
 stopBtn.onclick = stopScan;
+settingsBtn.onclick = async () => {
+  await loadConfig();
+  configDialog.showModal();
+};
+closeConfigBtn.onclick = () => configDialog.close();
+cancelConfigBtn.onclick = () => configDialog.close();
+thinkingEnabled.onchange = syncThinkingControls;
+configForm.onsubmit = saveConfig;
 input.addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
@@ -823,35 +1293,39 @@ input.addEventListener('keydown', event => {
 clearBtn.onclick = () => {
   activeSession().messages = [];
   activeSession().tools = [];
+  activeSession().scan = null;
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ command: 'clear' }));
   }
   currentAssistant = null;
   currentAssistantRaw = '';
+  resetReasoning();
   toolCards.clear();
-  completedStages.clear();
   saveSessions();
   renderConversation();
-  updateStages();
 };
 newSessionBtn.onclick = () => {
   const session = createSession();
   activeId = session.id;
   currentAssistant = null;
   currentAssistantRaw = '';
+  resetReasoning();
   toolCards.clear();
-  completedStages.clear();
   saveSessions();
   renderConversation();
-  updateStages();
   input.focus();
 };
 clearHistoryBtn.onclick = () => {
   sessions = [];
   activeId = createSession().id;
   renderConversation();
-  updateStages();
 };
+exportSessionBtn.onclick = exportActiveSession;
+
+setInterval(() => {
+  const scan = activeSession().scan;
+  if (scan?.status === 'running') renderScanState(scan);
+}, 1000);
 
 renderSessions();
 renderConversation();

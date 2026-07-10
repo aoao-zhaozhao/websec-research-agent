@@ -1,8 +1,7 @@
 """
-FastAPI server for My Agent Web Security Scanner v1.0.
+FastAPI server for My Agent Web Security Scanner v1.1.
 
-v1.0 adds native active-verification evidence while preserving the readable
-summaries used by the existing workbench.
+v1.1 adds observable scan lifecycle events while preserving v1.0 evidence.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
@@ -26,7 +25,7 @@ from agent import Agent, AgentConfig
 
 load_dotenv(PROJECT_ROOT / ".env")
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 app = FastAPI(title="Web Security Scanner", version=APP_VERSION)
 app.add_middleware(
@@ -48,12 +47,22 @@ def _json_safe(value: Any) -> Any:
         return str(value)
 
 
+def _config_bool(value: Any, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise HTTPException(status_code=422, detail=f"{field_name} must be a boolean")
+
+
 @app.get("/api/config")
 async def get_config():
     return {
         "model": agent_config.model,
         "base_url": agent_config.base_url,
         "max_turns": agent_config.max_turns,
+        "history_message_limit": agent_config.history_message_limit,
+        "thinking_enabled": agent_config.thinking_enabled,
+        "reasoning_effort": agent_config.reasoning_effort,
+        "show_reasoning": agent_config.show_reasoning,
         "has_api_key": bool(agent_config.api_key),
         "version": APP_VERSION,
     }
@@ -61,11 +70,34 @@ async def get_config():
 
 @app.put("/api/config")
 async def update_config(data: dict):
-    allowed = ["model", "base_url", "api_key", "max_turns"]
-    for key in allowed:
+    if "model" in data:
+        model = str(data["model"]).strip()
+        if model not in {"deepseek-v4-flash", "deepseek-v4-pro"}:
+            raise HTTPException(status_code=422, detail="model must be deepseek-v4-flash or deepseek-v4-pro")
+        agent_config.model = model
+    if "base_url" in data:
+        agent_config.base_url = str(data["base_url"]).strip()
+    if "api_key" in data:
+        agent_config.api_key = str(data["api_key"])
+    if "thinking_enabled" in data:
+        agent_config.thinking_enabled = _config_bool(data["thinking_enabled"], "thinking_enabled")
+    if "show_reasoning" in data:
+        agent_config.show_reasoning = _config_bool(data["show_reasoning"], "show_reasoning")
+    if "reasoning_effort" in data:
+        effort = str(data["reasoning_effort"]).lower()
+        if effort not in {"high", "max"}:
+            raise HTTPException(status_code=422, detail="reasoning_effort must be high or max")
+        agent_config.reasoning_effort = effort
+    for key, minimum, maximum in (("max_turns", 10, 240), ("history_message_limit", 2, 100)):
         if key in data:
-            setattr(agent_config, key, data[key])
-    return {"status": "ok"}
+            try:
+                value = int(data[key])
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=422, detail=f"{key} must be an integer") from exc
+            if not minimum <= value <= maximum:
+                raise HTTPException(status_code=422, detail=f"{key} must be between {minimum} and {maximum}")
+            setattr(agent_config, key, value)
+    return {"status": "ok", "model": agent_config.model, "thinking_enabled": agent_config.thinking_enabled}
 
 
 @app.get("/api/sessions")
@@ -91,19 +123,23 @@ async def chat(ws: WebSocket):
     async def run_scan(user_input: str) -> None:
         try:
             async for event in agent.run_events(user_input):
-                if event.get("type") in {"tool_start", "tool_end"}:
+                if event.get("type") in {"tool_started", "tool_finished"}:
                     event["input"] = _json_safe(event.get("input"))
                     event["output"] = _json_safe(event.get("output"))
                     event["result"] = _json_safe(event.get("result"))
                 await send_json(event)
             await send_json({"type": "done"})
         except asyncio.CancelledError:
+            for event in agent.finish_scan("stopped"):
+                await send_json(event)
             await send_json({"type": "stopped", "content": "扫描已停止"})
             raise
         except Exception as exc:
             import traceback
 
             print(f"[ERROR] Agent exception:\n{traceback.format_exc()}")
+            for event in agent.finish_scan("failed"):
+                await send_json(event)
             await send_json({"type": "error", "content": f"扫描出错: {exc}"})
 
     try:

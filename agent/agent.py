@@ -1,11 +1,4 @@
-"""
-LangGraph-based Web security scanning agent.
-
-v0.7 bundles:
-  - LFI verification tool: test_lfi_param
-  - Structured streaming events for the browser UI
-  - Existing v0.6 JS/API/JWT/SPA/RAG scanning flow
-"""
+"""LangGraph scanner orchestration with structured lifecycle events."""
 
 from __future__ import annotations
 
@@ -18,6 +11,7 @@ from langgraph.prebuilt import create_react_agent
 from .config import AgentConfig
 from .prompts import SYSTEM_PROMPT
 from .rag import create_search_knowledge_tool
+from .scan_state import ScanState, target_from_input
 from .tools import BASE_TOOLS
 from .tools.results import parse_tool_result
 
@@ -27,12 +21,7 @@ class Agent:
 
     def __init__(self, config: AgentConfig | None = None):
         self.config = config or AgentConfig()
-        self.llm = ChatOpenAI(
-            api_key=self.config.api_key,
-            base_url=self.config.base_url,
-            model=self.config.model,
-            temperature=self.config.temperature,
-        )
+        self.llm = self._build_llm()
 
         self._search_knowledge_tool = None
         self._rag_manager = None
@@ -40,12 +29,49 @@ class Agent:
 
         self.agent = create_react_agent(self.llm, self._tools())
         self.messages = [SystemMessage(content=SYSTEM_PROMPT)]
+        self._active_scan: ScanState | None = None
+        self.last_scan: ScanState | None = None
 
     def _tools(self):
         tools = list(BASE_TOOLS)
         if self._search_knowledge_tool:
             tools.append(self._search_knowledge_tool)
         return tools
+
+    def _build_llm(self) -> ChatOpenAI:
+        """Build a fresh client so runtime model settings apply to the next scan."""
+        options: dict[str, Any] = {
+            "api_key": self.config.api_key,
+            "base_url": self.config.base_url,
+            "model": self.config.model,
+        }
+        if self.config.thinking_enabled:
+            # DeepSeek's OpenAI-compatible API requires provider fields in
+            # extra_body and ignores temperature in thinking mode.
+            options["reasoning_effort"] = self.config.reasoning_effort
+            options["extra_body"] = {"thinking": {"type": "enabled"}}
+        else:
+            options["temperature"] = self.config.temperature
+            options["extra_body"] = {"thinking": {"type": "disabled"}}
+        return ChatOpenAI(**options)
+
+    def _trim_history(self) -> None:
+        """Keep the system prompt and recent completed turns within a stable budget."""
+        limit = max(2, int(self.config.history_message_limit))
+        system = self.messages[:1]
+        recent = self.messages[1:]
+        if len(recent) > limit:
+            self.messages = system + recent[-limit:]
+
+    @staticmethod
+    def _reasoning_content(chunk: Any) -> str:
+        additional = getattr(chunk, "additional_kwargs", {}) or {}
+        value = additional.get("reasoning_content")
+        if value is None:
+            value = getattr(chunk, "reasoning_content", None)
+        if isinstance(value, str):
+            return value
+        return ""
 
     def _init_rag(self) -> None:
         """Initialize the RAG tool; continue without it if local models fail."""
@@ -65,6 +91,11 @@ class Agent:
     def clear(self) -> None:
         self.messages = [SystemMessage(content=SYSTEM_PROMPT)]
 
+    def finish_scan(self, status: str) -> list[dict[str, Any]]:
+        """Return terminal lifecycle events for the current or latest scan."""
+        scan = self._active_scan or self.last_scan
+        return scan.finish(status) if scan else []
+
     def _summarize_tool_output(self, output: Any, limit: int = 900) -> str:
         if hasattr(output, "content"):
             text = str(output.content)
@@ -79,50 +110,84 @@ class Agent:
         """
         Execute one turn and yield structured events.
 
-        Event types:
-          - token: model text stream
-          - tool_start: tool name and arguments
-          - tool_end: compact tool result summary
+        The model remains responsible for tool selection. ScanState emits a
+        stable projection of that work for the UI: scan_started, stage_started,
+        stage_progress, finding_created, and scan_finished.
         """
+        scan = ScanState(target=target_from_input(user_input))
+        self._active_scan = scan
+        self.last_scan = scan
         self.messages.append(HumanMessage(content=user_input))
+        self._trim_history()
+        self.llm = self._build_llm()
         self.agent = create_react_agent(self.llm, self._tools())
 
         full_response: list[str] = []
+        yield scan.started_event()
+        try:
+            async for event in self.agent.astream_events(
+                {"messages": list(self.messages)},
+                config={"recursion_limit": self.config.max_turns},
+                version="v2",
+            ):
+                kind = event["event"]
 
-        async for event in self.agent.astream_events(
-            {"messages": list(self.messages)},
-            config={"recursion_limit": self.config.max_turns},
-            version="v2",
-        ):
-            kind = event["event"]
+                if kind == "on_chat_model_stream":
+                    chunk = event["data"]["chunk"]
+                    reasoning = self._reasoning_content(chunk)
+                    if reasoning and self.config.show_reasoning:
+                        yield {"type": "reasoning", "scan_id": scan.scan_id, "content": reasoning}
+                    if chunk.content:
+                        full_response.append(chunk.content)
+                        yield {"type": "token", "scan_id": scan.scan_id, "content": chunk.content}
+                elif kind == "on_tool_start":
+                    tool_name = event.get("name", "tool")
+                    run_id = str(event.get("run_id", ""))
+                    for lifecycle_event in scan.start_tool(tool_name, run_id):
+                        yield lifecycle_event
+                    yield {
+                        "type": "tool_started",
+                        "scan_id": scan.scan_id,
+                        "stage": scan.current_stage,
+                        "id": run_id,
+                        "name": tool_name,
+                        "input": event.get("data", {}).get("input"),
+                    }
+                elif kind == "on_tool_end":
+                    tool_name = event.get("name", "tool")
+                    run_id = str(event.get("run_id", ""))
+                    output, result = parse_tool_result(event.get("data", {}).get("output"))
+                    yield {
+                        "type": "tool_finished",
+                        "scan_id": scan.scan_id,
+                        "stage": scan.current_stage,
+                        "id": run_id,
+                        "name": tool_name,
+                        "output": self._summarize_tool_output(output),
+                        "result": result,
+                    }
+                    yield scan.finish_tool(tool_name, run_id, result)
+                    for finding_event in scan.finding_events(tool_name, result):
+                        yield finding_event
 
-            if kind == "on_chat_model_stream":
-                chunk = event["data"]["chunk"]
-                if chunk.content:
-                    full_response.append(chunk.content)
-                    yield {"type": "token", "content": chunk.content}
-            elif kind == "on_tool_start":
-                yield {
-                    "type": "tool_start",
-                    "id": event.get("run_id"),
-                    "name": event.get("name", "tool"),
-                    "input": event.get("data", {}).get("input"),
-                }
-            elif kind == "on_tool_end":
-                output, result = parse_tool_result(event.get("data", {}).get("output"))
-                yield {
-                    "type": "tool_end",
-                    "id": event.get("run_id"),
-                    "name": event.get("name", "tool"),
-                    "output": self._summarize_tool_output(output),
-                    "result": result,
-                }
-
-        response_text = "".join(full_response).strip()
-        if response_text:
-            self.messages.append(AIMessage(content=response_text))
-        else:
-            self.messages.append(AIMessage(content="扫描完成，请查看工具调用结果。"))
+            response_text = "".join(full_response).strip()
+            if response_text:
+                self.messages.append(AIMessage(content=response_text))
+            else:
+                self.messages.append(AIMessage(content="扫描完成，请查看工具调用结果。"))
+            self._trim_history()
+            for lifecycle_event in scan.finish("completed"):
+                yield lifecycle_event
+        except Exception:
+            response_text = "".join(full_response).strip()
+            if response_text:
+                self.messages.append(AIMessage(content=response_text))
+                self._trim_history()
+            for lifecycle_event in scan.finish("failed"):
+                yield lifecycle_event
+            raise
+        finally:
+            self._active_scan = None
 
     async def run(self, user_input: str) -> AsyncIterator[str]:
         """Backward-compatible token-only stream."""

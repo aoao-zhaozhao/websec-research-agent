@@ -8,6 +8,13 @@ import os
 from dataclasses import dataclass, field
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass
 class AgentConfig:
     """Web 漏洞审查 Agent 配置"""
@@ -20,12 +27,16 @@ class AgentConfig:
         default_factory=lambda: os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     )
     model: str = field(
-        default_factory=lambda: os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        default_factory=lambda: os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
     )
 
     # ── Agent 行为 ──
-    max_turns: int = 60           # 单次扫描最大 LangGraph 步数
+    max_turns: int = field(default_factory=lambda: int(os.getenv("AGENT_MAX_TURNS", "120")))
+    history_message_limit: int = field(default_factory=lambda: int(os.getenv("AGENT_HISTORY_MESSAGES", "24")))
     temperature: float = 0.3      # LLM 温度（安全分析需精确）
+    thinking_enabled: bool = field(default_factory=lambda: _env_bool("DEEPSEEK_THINKING_ENABLED", True))
+    reasoning_effort: str = field(default_factory=lambda: os.getenv("DEEPSEEK_REASONING_EFFORT", "high"))
+    show_reasoning: bool = field(default_factory=lambda: _env_bool("DEEPSEEK_SHOW_REASONING", True))
 
     # ── RAG 知识库 ──
     knowledge_dir: str = field(

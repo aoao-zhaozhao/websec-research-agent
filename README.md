@@ -1,6 +1,6 @@
 # My Agent — Web 漏洞审查引擎
 
-基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。支持自动爬取、JS/API 发现、SPA 渲染、JWT 审计、SQLi/XSS/LFI 受限差分验证、RAG 知识库验证和安全头分析。通过 FastAPI + WebSocket 提供服务。
+基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。支持自动爬取、JS/API 发现、SPA 渲染、JWT 审计、SQLi/XSS/LFI 受限差分验证、RAG 知识库验证和安全头分析。通过 FastAPI + WebSocket 提供可观察的扫描阶段、证据与报告工作台。
 
 ## 项目结构
 
@@ -45,8 +45,17 @@ my-agent/
 ```env
 DEEPSEEK_API_KEY=sk-your-api-key-here
 DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_THINKING_ENABLED=true
+DEEPSEEK_REASONING_EFFORT=high
+DEEPSEEK_SHOW_REASONING=true
+AGENT_MAX_TURNS=120
+AGENT_HISTORY_MESSAGES=24
 ```
+
+`deepseek-v4-flash` 用于默认扫描；在“模型与思考”设置中可切换到 `deepseek-v4-pro`。思考模式显式传递 `thinking.enabled` 和 `reasoning_effort`（`high` / `max`），运行时不会传递与思考模式不兼容的 `temperature`。模型、思考开关和强度会在下一次扫描生效。
+
+每次扫描最多执行 `AGENT_MAX_TURNS` 个 LangGraph 步骤（默认 120，配置接口允许 10-240）；会话上下文保留系统提示和最近 `AGENT_HISTORY_MESSAGES` 条已完成消息（默认 24），避免长会话无限增长并导致模型上下文耗尽。扫描过程中显示的 reasoning 仅用于当前页面实时查看，不写入会话历史。
 
 ### 2. 安装依赖
 
@@ -151,8 +160,8 @@ Web 工作台底部按钮：
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
-| `/api/chat` | WebSocket | 核心对话——逐 token 流式输出扫描结果和工具事件；`tool_end` 附带结构化 `result`；支持 `clear` / `stop` 命令 |
-| `/api/config` | GET/PUT | 查看/修改配置 |
+| `/api/chat` | WebSocket | 核心对话——逐 token 流式输出，提供 `scan_started`、`stage_started`、`stage_progress`、`tool_started`、`tool_finished`、`finding_created`、`scan_finished` 事件；工具完成事件附带结构化 `result`；支持 `clear` / `stop` 命令 |
+| `/api/config` | GET/PUT | 查看/修改模型、thinking、`high/max` 强度、最大步骤和会话历史窗口；设置在下一次扫描生效 |
 | `/api/sessions` | GET | 活跃连接数 |
 | `/api/health` | GET | 健康检查 |
 
@@ -256,8 +265,16 @@ Web 工作台底部按钮：
 - **HTTP 方法验证**: 新增 `http_request`，在源码或 `Allow` 响应头明确要求时可执行 PUT/PATCH 等受约束方法
 - **回归测试**: 新增 mock HTTP 测试，覆盖安全头、空表单、链接、超时、爬取和 LFI 基线失败
 
-### v1.0.0 — 原生证据 + 主动验证引擎 ⭐ 当前
+### v1.0.0 — 原生证据 + 主动验证引擎
 - **原生 ToolResult**: `http_request`、页面分析、爬取、批量扫描和 LFI 工具直接构造请求、响应和 finding 证据，不再由文本适配器恢复字段
 - **主动验证**: 新增 `verify_injection`，只允许授权范围内的 GET / 表单 POST，并对 SQLi、XSS、LFI 建立 baseline、无效值和受限 payload 差分
 - **证据强度**: 统一使用 `confirmed` / `likely` / `weak` / `unconfirmed`，报告按已确认、疑似、信息项、未确认分组；弱信号不得提升为已确认
 - **靶场回归**: 本地 HTTP 靶场覆盖三类 confirmed 信号、弱信号、POST、超时和 payload 解析失败
+
+### v1.1.0 — 扫描状态机 + UI 2.0 ⭐ 当前
+- **显式扫描状态**: 扫描具有独立 `scan_id`，将 LangGraph 工具调用投影为 `scope -> crawl -> enumerate -> verify -> knowledge -> report` 阶段快照；停止后保留已完成阶段与证据。
+- **结构化事件流**: WebSocket 发送阶段开始、阶段进度、工具开始/完成、finding 创建和扫描完成事件；工具耗时、错误数与 finding 数由事件统计。
+- **证据工作台**: 右栏显示阶段、目标、耗时、统计和按 severity/confidence 呈现的漏洞卡；卡片可展开查看 evidence 与复现步骤。
+- **会话操作**: 浏览器本地会话支持重命名、删除和 JSON 导出当前扫描；移动端仍可查看状态与证据栏。
+- **Markdown**: 安全的行级渲染支持标题、代码块、列表和表格。
+- **模型与上下文**: 默认使用 `deepseek-v4-flash`；可在工作台切换 Flash/Pro、thinking 与 `high/max` 强度，实时显示 `reasoning_content`；将最大步骤提高到 120，并限制历史消息窗口避免长会话中断。

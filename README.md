@@ -1,6 +1,6 @@
-# My Agent — Web 漏洞审查引擎
+# WebSec Research Agent — Web 漏洞审查引擎
 
-基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。支持自动爬取、JS/API 发现、SPA 渲染、JWT 审计、SQLi/XSS/LFI 受限差分验证、RAG 知识库验证和安全头分析。通过 FastAPI + WebSocket 提供可观察的扫描阶段、证据与报告工作台。
+基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。支持自动爬取、JS/API 发现、SPA 渲染、JWT 审计、SQLi/XSS/LFI 受限差分验证、CSS 注入 / Scriptless XSS 高级利用工具、RAG 知识库验证和安全头分析。通过 FastAPI + WebSocket 提供可观察的扫描阶段、证据与报告工作台。
 
 ## 项目结构
 
@@ -11,7 +11,7 @@ my-agent/
 ├── agent/
 │   ├── __init__.py             # 模块入口
 │   ├── config.py               # 配置管理 (AgentConfig)
-│   ├── prompts.py              # System Prompt (v0.9 工作流)
+│   ├── prompts.py              # System Prompt (v1.2 工作流)
 │   ├── agent.py                # Agent 核心引擎 (LangGraph)
 │   ├── rag.py                  # RAG 知识库 (Chroma + Qwen3 两阶段检索)
 │   ├── core.py                 # 向后兼容重导出
@@ -21,11 +21,13 @@ my-agent/
 │   │   ├── crawl_tools.py      #   crawl / sitemap / batch_scan
 │   │   ├── static_tools.py     #   analyze_js / decode_jwt / discover_api / render_page
 │   │   ├── lfi_tools.py        #   test_lfi_param
+│   │   ├── exploit_tools.py    #   css_exfil_payload / webhook_reconstruct  ← v1.2
 │   │   └── http_client.py      #   统一请求、同域边界、超时、限速、重试
 │   ├── knowledge/              # 知识库 Markdown 源文件
 │   │   ├── owasp_top10.md      #   OWASP Top 10 (2021) 全 10 类 + 检测/修复
 │   │   ├── common_cves.md      #   精选 CVE 案例 (Log4Shell/Spring4Shell/XSS/SSRF...)
-│   │   └── remediation.md      #   代码级修复方案 (Python/Java/Nginx/Apache)
+│   │   ├── remediation.md      #   代码级修复方案 (Python/Java/Nginx/Apache)
+│   │   └── css_injection.md    #   Scriptless XSS / CSS 数据外带 / CSP 绕过 ← v1.2
 │   └── models/                 # 本地模型 (.gitignore 排除)
 │       ├── qwen3-embedding-0.6b/   # 1024 维 Embedding
 │       └── qwen3-reranker-0.6b/   # CrossEncoder 精排
@@ -142,7 +144,9 @@ Agent 会自动：
 6. 对授权输入点调用 `verify_injection`，用 baseline、无效值和受限 SQLi/XSS/LFI payload 做差分验证
 7. 对疑似 LFI 参数调用 `test_lfi_param` 做 bounded payload 验证、响应差分和 flag-like 提取
 8. **search_knowledge 查知识库验证**，匹配漏洞分类、CVE/CVSS 参考和修复方案
-9. 输出完整安全审计报告（类型 + 风险等级 + 参考分类/CVE + 证据 + 修复建议）
+9. 对 CSP 限制 JS 但未限制 CSS 的场景，调用 **`css_exfil_payload`** 构造 Scriptless XSS 外带 Payload ← v1.2
+10. 从 webhook 日志用 **`webhook_reconstruct`** 还原逐字符泄露的 OTP / Token / Secret ← v1.2
+11. 输出完整安全审计报告（类型 + 风险等级 + 参考分类/CVE + 证据 + 修复建议）
 
 也支持命令行模式：`python test_client.py`
 
@@ -185,6 +189,8 @@ Web 工作台底部按钮：
 | `sitemap(url)` | 攻击面分类统计（登录页/表单/API/管理后台/静态资源） |
 | `batch_scan(url)` | 批量扫描所有页面安全头 + 整体安全评级 |
 | `search_knowledge(query)` ⭐ | 两阶段 RAG 检索知识库（漏洞分类、CVE/CVSS 参考、修复方案） |
+| `css_exfil_payload(url, param, webhook_url, extract_length, charset, selector)` 🆕 | 生成 CSS 属性选择器 payload，用于 Scriptless XSS 数据外带（CSP style-src 绕过） |
+| `webhook_reconstruct(logs, param_name)` 🆕 | 从 webhook 请求日志中解析并还原逐字符泄露的 secret 值 |
 
 ## 架构
 
@@ -271,10 +277,17 @@ Web 工作台底部按钮：
 - **证据强度**: 统一使用 `confirmed` / `likely` / `weak` / `unconfirmed`，报告按已确认、疑似、信息项、未确认分组；弱信号不得提升为已确认
 - **靶场回归**: 本地 HTTP 靶场覆盖三类 confirmed 信号、弱信号、POST、超时和 payload 解析失败
 
-### v1.1.0 — 扫描状态机 + UI 2.0 ⭐ 当前
+### v1.1.0 — 扫描状态机 + UI 2.0
 - **显式扫描状态**: 扫描具有独立 `scan_id`，将 LangGraph 工具调用投影为 `scope -> crawl -> enumerate -> verify -> knowledge -> report` 阶段快照；停止后保留已完成阶段与证据。
 - **结构化事件流**: WebSocket 发送阶段开始、阶段进度、工具开始/完成、finding 创建和扫描完成事件；工具耗时、错误数与 finding 数由事件统计。
 - **证据工作台**: 右栏显示阶段、目标、耗时、统计和按 severity/confidence 呈现的漏洞卡；卡片可展开查看 evidence 与复现步骤。
 - **会话操作**: 浏览器本地会话支持重命名、删除和 JSON 导出当前扫描；移动端仍可查看状态与证据栏。
 - **Markdown**: 安全的行级渲染支持标题、代码块、列表和表格。
 - **模型与上下文**: 默认使用 `deepseek-v4-flash`；可在工作台切换 Flash/Pro、thinking 与 `high/max` 强度，实时显示 `reasoning_content`；将最大步骤提高到 120，并限制历史消息窗口避免长会话中断。
+
+### v1.2.0 — 高级利用工具 + 知识库扩展 ⭐ 当前
+- **CSS 注入知识库**: 新增 `css_injection.md`，覆盖 Scriptless XSS、CSS 属性选择器数据外带、CSP `style-src` 绕过、`@import` 链式加载、逐字符 OTP/CSRF token 窃取完整攻击链与防御方案。
+- **CSS 外带 Payload 生成**: 新增 `css_exfil_payload` 工具，自动生成逐字符匹配的 CSS 属性选择器 payload，支持多种字符集（digits/hex/alphanumeric/extended）和 prefix/suffix 匹配模式。
+- **Webhook 数据还原**: 新增 `webhook_reconstruct` 工具，支持解析 webhook.site JSON / 原始 URL 列表 / 逐行日志等多种格式，自动还原逐字符泄露的 secret 值并标记每位置信度。
+- **System Prompt 增强**: 新增 CTF/利用场景工作流指引（步骤 12-17），覆盖"识别注入点 → CSP 分析 → 构造 Payload → 提交 Bot → 收集外带 → 还原 Secret → 拿 Flag"完整链路。
+- **工具集**: 现共 17 个注册工具（+2 个利用工具）。

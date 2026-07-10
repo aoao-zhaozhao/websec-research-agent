@@ -89,6 +89,17 @@ class RAGManager:
                     name=name,
                     embedding_function=self.embedding_fn,
                 )
+                # Check for new knowledge files that need indexing
+                existing = set(
+                    meta.get("source", "")
+                    for meta_list in self._collection.get(include=["metadatas"]).get("metadatas", [])
+                    for meta in [meta_list] if isinstance(meta, dict)
+                )
+                md_files = {f.name for f in self.knowledge_dir.glob("*.md")}
+                new_files = md_files - existing
+                if new_files:
+                    print(f"[RAG] 检测到新知识文件: {new_files}")
+                    self._index_documents()
             except Exception:
                 self._collection = self.client.create_collection(
                     name=name,

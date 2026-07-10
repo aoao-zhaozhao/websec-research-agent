@@ -8,6 +8,7 @@ from .crawl_tools import crawl, sitemap, batch_scan
 from .static_tools import analyze_js, decode_jwt, discover_api, render_page
 from .lfi_tools import test_lfi_param
 from .verification_tools import verify_injection
+from .exploit_tools import css_exfil_payload, webhook_reconstruct
 from .structured import structured_tool
 
 # 基础工具列表（不包含 search_knowledge，由 rag.py 动态注入）
@@ -29,6 +30,8 @@ BASE_TOOLS = [
         crawl,
         sitemap,
         batch_scan,
+        css_exfil_payload,
+        webhook_reconstruct,
     )
 ]
 
@@ -48,5 +51,7 @@ __all__ = [
     "crawl",
     "sitemap",
     "batch_scan",
+    "css_exfil_payload",
+    "webhook_reconstruct",
     "BASE_TOOLS",
 ]

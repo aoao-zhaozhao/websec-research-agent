@@ -23,3 +23,12 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# v1.3: 运行时数据（SQLite 持久化数据 + 技能库自动生成的技能）
+data/
+# 种子技能不受忽略（感叹号取反）
+!agent/skills/
+agent/skills/*/
+!agent/skills/css_injection/
+agent/skills/css_injection/*/
+!agent/skills/css_injection/css-exfil-otp/

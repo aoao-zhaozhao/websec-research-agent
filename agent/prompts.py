@@ -85,4 +85,29 @@ CSS 注入识别信号：
 - 页面存在 HTML 注入但 CSP script-src 阻止了内联脚本
 - style-src 包含 'unsafe-inline' 或未设置
 - 页面中存在可匹配的敏感属性（如 input value、csrf token、a href 中的 token）
-- /visit 或 /submit 等 bot 访问接口可用"""
+- /visit 或 /submit 等 bot 访问接口可用
+
+### 5. 自进化工作流（每次扫描必须执行）
+
+扫描完成后，必须执行以下自进化步骤：
+
+18. 扫描反思：
+    - 调用 scan_reflect(target, findings_summary, successful_techniques, failed_attempts)
+    - 重点记录：哪种 payload 有效、哪个 WAF 规则被绕过、哪个工具组合最有效
+19. 沉淀技能：
+    - 如果发现了一种新的、可复用的攻击模式或绕过技巧，调用 skill_create 沉淀为技能
+    - 技能 body 必须包含：适用场景、前置条件、分步操作、示例 payload、注意事项
+    - 分类选择：sqli / xss / lfi / ssrf / css_injection / auth / recon / csp_bypass / general
+20. 改进已有技能：
+    - 如果在已有技能基础上发现了更好的变体，调用 skill_patch 更新
+    - 如果某个技能在本次扫描中被证实有效，它的使用计数已自动增加
+21. 扫描开始时主动加载技能：
+    - 在阶段 1（攻击面测绘）之前，调用 skill_list 查看可用技能
+    - 对与目标相关的技能调用 skill_load 加载到上下文
+    - 例如：扫描有登录页的目标时加载 auth 技能，扫描 SQL 注入点时加载 sqli 技能
+
+自进化原则：
+- 每次扫描都是一次学习机会。成功的模式要沉淀，失败的模式要记录。
+- 技能是 Agent 的"经验肌肉"——每次 skill_create / skill_patch 都让未来的扫描更强。
+- 不要创建过于泛化的技能（如"扫描网站"），要聚焦具体可操作的技术（如"MySQL时间盲注绕过WAF"）。
+- 标签 (tags) 应包含关键技术词，方便后续检索：如 time-based, waf-bypass, mysql, union, error-based 等。"""

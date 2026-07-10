@@ -9,6 +9,7 @@ from .static_tools import analyze_js, decode_jwt, discover_api, render_page
 from .lfi_tools import test_lfi_param
 from .verification_tools import verify_injection
 from .exploit_tools import css_exfil_payload, webhook_reconstruct
+from .skill_tools import skill_list, skill_load, skill_create, skill_patch, scan_reflect
 from .structured import structured_tool
 
 # 基础工具列表（不包含 search_knowledge，由 rag.py 动态注入）
@@ -32,6 +33,11 @@ BASE_TOOLS = [
         batch_scan,
         css_exfil_payload,
         webhook_reconstruct,
+        skill_list,
+        skill_load,
+        skill_create,
+        skill_patch,
+        scan_reflect,
     )
 ]
 
@@ -53,5 +59,10 @@ __all__ = [
     "batch_scan",
     "css_exfil_payload",
     "webhook_reconstruct",
+    "skill_list",
+    "skill_load",
+    "skill_create",
+    "skill_patch",
+    "scan_reflect",
     "BASE_TOOLS",
 ]

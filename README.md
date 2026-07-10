@@ -22,12 +22,19 @@ my-agent/
 │   │   ├── static_tools.py     #   analyze_js / decode_jwt / discover_api / render_page
 │   │   ├── lfi_tools.py        #   test_lfi_param
 │   │   ├── exploit_tools.py    #   css_exfil_payload / webhook_reconstruct  ← v1.2
+│   │   ├── skill_tools.py      #   skill_list / skill_load / skill_create / skill_patch / scan_reflect  ← v1.3
 │   │   └── http_client.py      #   统一请求、同域边界、超时、限速、重试
 │   ├── knowledge/              # 知识库 Markdown 源文件
 │   │   ├── owasp_top10.md      #   OWASP Top 10 (2021) 全 10 类 + 检测/修复
 │   │   ├── common_cves.md      #   精选 CVE 案例 (Log4Shell/Spring4Shell/XSS/SSRF...)
 │   │   ├── remediation.md      #   代码级修复方案 (Python/Java/Nginx/Apache)
 │   │   └── css_injection.md    #   Scriptless XSS / CSS 数据外带 / CSP 绕过 ← v1.2
+│   ├── skills/                 # 自进化技能库 ← v1.3
+│   │   ├── css_injection/      #   CSS注入相关技能 (如 css-exfil-otp)
+│   │   ├── sqli/ xss/ lfi/     #   按漏洞类型组织的经验技能
+│   │   └── general/            #   通用扫描技巧
+│   ├── skill_manager.py        # 技能生命周期管理 ← v1.3
+│   ├── session_db.py           # SQLite 持久化 (FTS5) ← v1.3
 │   └── models/                 # 本地模型 (.gitignore 排除)
 │       ├── qwen3-embedding-0.6b/   # 1024 维 Embedding
 │       └── qwen3-reranker-0.6b/   # CrossEncoder 精排
@@ -147,6 +154,8 @@ Agent 会自动：
 9. 对 CSP 限制 JS 但未限制 CSS 的场景，调用 **`css_exfil_payload`** 构造 Scriptless XSS 外带 Payload ← v1.2
 10. 从 webhook 日志用 **`webhook_reconstruct`** 还原逐字符泄露的 OTP / Token / Secret ← v1.2
 11. 输出完整安全审计报告（类型 + 风险等级 + 参考分类/CVE + 证据 + 修复建议）
+12. **`scan_reflect`** 反思本次扫描得失 ← v1.3
+13. **`skill_create`** 将成功的攻击模式沉淀为可复用技能 ← v1.3
 
 也支持命令行模式：`python test_client.py`
 
@@ -191,6 +200,11 @@ Web 工作台底部按钮：
 | `search_knowledge(query)` ⭐ | 两阶段 RAG 检索知识库（漏洞分类、CVE/CVSS 参考、修复方案） |
 | `css_exfil_payload(url, param, webhook_url, extract_length, charset, selector)` 🆕 | 生成 CSS 属性选择器 payload，用于 Scriptless XSS 数据外带（CSP style-src 绕过） |
 | `webhook_reconstruct(logs, param_name)` 🆕 | 从 webhook 请求日志中解析并还原逐字符泄露的 secret 值 |
+| `skill_list(category)` 🆕 v1.3 | 列出技能库中所有已沉淀的经验技能 |
+| `skill_load(name)` 🆕 v1.3 | 加载指定技能到当前扫描上下文 |
+| `skill_create(title, description, body, category, tags)` 🆕 v1.3 | 将成功经验沉淀为可复用技能（SKILL.md 格式） |
+| `skill_patch(name, old_text, new_text)` 🆕 v1.3 | 改进已有技能——替换指定文本段落 |
+| `scan_reflect(target, findings_summary, successful_techniques, failed_attempts)` 🆕 v1.3 | 扫描后反思：分析得失并建议是否创建/更新技能 |
 
 ## 架构
 
@@ -285,9 +299,18 @@ Web 工作台底部按钮：
 - **Markdown**: 安全的行级渲染支持标题、代码块、列表和表格。
 - **模型与上下文**: 默认使用 `deepseek-v4-flash`；可在工作台切换 Flash/Pro、thinking 与 `high/max` 强度，实时显示 `reasoning_content`；将最大步骤提高到 120，并限制历史消息窗口避免长会话中断。
 
-### v1.2.0 — 高级利用工具 + 知识库扩展 ⭐ 当前
+### v1.2.0 — 高级利用工具 + 知识库扩展
 - **CSS 注入知识库**: 新增 `css_injection.md`，覆盖 Scriptless XSS、CSS 属性选择器数据外带、CSP `style-src` 绕过、`@import` 链式加载、逐字符 OTP/CSRF token 窃取完整攻击链与防御方案。
 - **CSS 外带 Payload 生成**: 新增 `css_exfil_payload` 工具，自动生成逐字符匹配的 CSS 属性选择器 payload，支持多种字符集（digits/hex/alphanumeric/extended）和 prefix/suffix 匹配模式。
 - **Webhook 数据还原**: 新增 `webhook_reconstruct` 工具，支持解析 webhook.site JSON / 原始 URL 列表 / 逐行日志等多种格式，自动还原逐字符泄露的 secret 值并标记每位置信度。
 - **System Prompt 增强**: 新增 CTF/利用场景工作流指引（步骤 12-17），覆盖"识别注入点 → CSP 分析 → 构造 Payload → 提交 Bot → 收集外带 → 还原 Secret → 拿 Flag"完整链路。
 - **工具集**: 现共 17 个注册工具（+2 个利用工具）。
+
+### v1.3.0 — 自进化技能系统 + 持久化 ⭐ 当前
+- **灵感来源**: Hermes Agent 的自进化架构（Skill 系统 + Curator + Background Review）。
+- **技能系统**: 新增 `SkillManager` + 5 个技能工具（`skill_list` / `skill_load` / `skill_create` / `skill_patch` / `scan_reflect`）。技能按漏洞类型分目录存储，兼容 agentskills.io 的 SKILL.md 格式（YAML frontmatter + Markdown 正文），含生命周期管理（active → stale → archived）。
+- **自反思循环**: 新增 §5 自进化工作流。每次扫描完成后 Agent 调用 `scan_reflect` 分析得失 → `skill_create` 将成功模式沉淀为技能 → 后续扫描中通过 `skill_load` 加载相关技能增强检测能力。
+- **种子技能**: 预置 `css-exfil-otp` 技能作为示例，Agent 可参考其格式创建新技能。
+- **SQLite 持久化**: 新增 `SessionDB`（FTS5 全文搜索 + WAL 模式），保存 scans / findings / events，支持历史回查和跨会话搜索。关闭浏览器后扫描结果不丢失。
+- **System Prompt**: 新增 §5 自进化工作流（步骤 18-21）。Agent 被指示在每次扫描后主动反思并沉淀技能。
+- **工具集**: 现共 22 个注册工具（+5 个技能/进化工具）。

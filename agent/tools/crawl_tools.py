@@ -10,6 +10,7 @@ from langchain_core.tools import tool
 from urllib.parse import urljoin, urlparse, urldefrag
 
 from .http_client import get, in_scope_url, normalize_url
+from .results import Evidence, Finding, RequestRecord, ToolResult, error_kind
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -34,6 +35,7 @@ def crawl(root_url: str, max_depth: int = 2, max_pages: int = 30) -> str:
     visited: set[str] = set()
     queue: list[tuple[str, int]] = [(root_url.rstrip("/"), 0)]
     discovered: list[dict] = []
+    errors: list[dict[str, str]] = []
 
     # 常见的敏感探测路径
     sensitive_paths = [
@@ -80,18 +82,20 @@ def crawl(root_url: str, max_depth: int = 2, max_pages: int = 30) -> str:
                 if target and target not in visited:
                     queue.append((target, depth + 1))
 
-        except Exception:
+        except Exception as exc:
+            errors.append({"kind": error_kind(exc), "message": f"{url}: {exc}"})
             continue
 
     # 探测敏感路径
-    sensitive_found: list[str] = []
+    sensitive_found: list[dict[str, object]] = []
     for path in sensitive_paths:
         probe_url = urljoin(root_url, path)
         try:
             r = get(probe_url, timeout=5, allow_redirects=False)
             if r.status_code not in (404, 500, 502, 503):
-                sensitive_found.append(f"  {probe_url} → {r.status_code}")
-        except Exception:
+                sensitive_found.append({"url": probe_url, "status": r.status_code})
+        except Exception as exc:
+            errors.append({"kind": error_kind(exc), "message": f"{probe_url}: {exc}"})
             pass
 
     lines = [
@@ -108,11 +112,25 @@ def crawl(root_url: str, max_depth: int = 2, max_pages: int = 30) -> str:
     if sensitive_found:
         lines.append("")
         lines.append("── 敏感路径探测 ──")
-        lines.extend(sensitive_found)
+        lines.extend(f"  {item['url']} → {item['status']}" for item in sensitive_found)
 
     lines.append("")
     lines.append(f"总计: {len(discovered)} 个页面, {len(sensitive_found)} 个敏感路径")
-    return "\n".join(lines)
+    findings = [
+        Finding(
+            title=f"敏感路径可访问：{item['url']}", severity="medium", confidence="likely",
+            category="sensitive_path",
+            evidence=[Evidence("http_status", "Sensitive path returned a non-error status.", str(item["url"]), {"status": item["status"]})],
+            reproduction=[f"GET {item['url']}"],
+        )
+        for item in sensitive_found
+    ]
+    readable = "\n".join(lines)
+    return ToolResult(
+        tool="crawl", target=root_url, status="ok", summary=f"发现 {len(discovered)} 个页面和 {len(sensitive_found)} 个敏感路径",
+        raw_excerpt=readable, findings=findings, errors=errors,
+        request=RequestRecord("GET", root_url), data={"pages": discovered, "sensitive_paths": sensitive_found},
+    ).to_text()
 
 
 @tool
@@ -245,6 +263,7 @@ def batch_scan(root_url: str) -> str:
     visited: set[str] = set()
     queue: list[tuple[str, int]] = [(root_url.rstrip("/"), 0)]
     results: list[dict] = []
+    errors: list[dict[str, str]] = []
 
     # 第一步: crawl
     while queue and len(results) < 20:
@@ -278,7 +297,8 @@ def batch_scan(root_url: str) -> str:
                     target = in_scope_url(root_url, href)
                     if target and target not in visited:
                         queue.append((target, depth + 1))
-        except Exception:
+        except Exception as exc:
+            errors.append({"kind": error_kind(exc), "message": f"{url}: {exc}"})
             continue
 
     # 第二步: 汇总
@@ -317,4 +337,18 @@ def batch_scan(root_url: str) -> str:
         grade = "🔴 C — 安全配置严重不足"
 
     lines.append(f"\n整体安全评级: {grade}")
-    return "\n".join(lines)
+    findings: list[Finding] = []
+    for item in results:
+        for header in item["missing_headers"]:
+            findings.append(Finding(
+                title=f"缺少安全响应头：{header}", severity="low", confidence="confirmed",
+                category="security_headers",
+                evidence=[Evidence("header_check", f"{header} is absent", item["url"], {"status": item["status"], "header": header})],
+                reproduction=[f"请求 {item['url']} 并检查 {header} 响应头。"],
+            ))
+    readable = "\n".join(lines)
+    return ToolResult(
+        tool="batch_scan", target=root_url, status="ok", summary=f"扫描 {len(results)} 页，发现 {total_missing} 个安全头缺失",
+        raw_excerpt=readable, findings=findings, errors=errors,
+        request=RequestRecord("GET", root_url), data={"pages": results, "grade": grade},
+    ).to_text()

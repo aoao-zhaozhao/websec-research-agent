@@ -17,6 +17,7 @@ import urllib3
 from langchain_core.tools import tool
 
 from .http_client import get, normalize_url, truncate_text
+from .results import Evidence, Finding, RequestRecord, ToolResult, error_result, response_record
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -168,11 +169,10 @@ def test_lfi_param(url: str, param: str, max_payloads: int = 16) -> str:
     target_url = normalize_url(url)
     params = _available_params(target_url)
     if param not in params:
-        return (
-            f"[test_lfi_param] {target_url}\n"
-            f"Parameter '{param}' is not present in the query string.\n"
-            f"Available parameters: {', '.join(params) if params else '(none)'}"
-        )
+        return error_result(
+            "test_lfi_param", target_url,
+            f"Parameter '{param}' is not present in the query string. Available parameters: {', '.join(params) if params else '(none)'}",
+        ).to_text()
 
     parsed = urlparse(target_url)
     original_pairs = dict(parse_qsl(parsed.query, keep_blank_values=True))
@@ -184,7 +184,7 @@ def test_lfi_param(url: str, param: str, max_payloads: int = 16) -> str:
         invalid_url = _set_query_param(target_url, param, invalid_value)
         invalid = get(invalid_url, timeout=8)
     except Exception as exc:
-        return f"[test_lfi_param] {target_url}\nBaseline request failed: {exc}"
+        return error_result("test_lfi_param", target_url, f"Baseline request failed: {exc}").to_text()
 
     attempts = max(1, min(int(max_payloads or 16), MAX_PAYLOADS))
     payloads = _payloads(original_value)[:attempts]
@@ -228,14 +228,14 @@ def test_lfi_param(url: str, param: str, max_payloads: int = 16) -> str:
 
     ranked = sorted(results, key=lambda item: item.score, reverse=True)
     best = ranked[0] if ranked else None
-    confidence = "none"
+    confidence = "unconfirmed"
     if best:
         if best.score >= 80:
-            confidence = "high"
+            confidence = "confirmed"
         elif best.score >= 35:
-            confidence = "medium"
+            confidence = "likely"
         elif best.score > 0:
-            confidence = "low"
+            confidence = "weak"
 
     lines = [
         f"[test_lfi_param] {target_url}",
@@ -255,7 +255,13 @@ def test_lfi_param(url: str, param: str, max_payloads: int = 16) -> str:
                 "Observed constraint: payload responses matched baseline/invalid responses or produced no useful markers.",
             ]
         )
-        return "\n".join(lines)
+        readable = "\n".join(lines)
+        return ToolResult(
+            tool="test_lfi_param", target=target_url, status="ok", summary="未发现 LFI 证据",
+            raw_excerpt=readable, request=RequestRecord("GET", target_url, parameters={param: original_value}),
+            response=response_record(baseline),
+            data={"baseline": response_record(baseline).__dict__, "invalid": response_record(invalid).__dict__, "attempts": []},
+        ).to_text()
 
     lines.append("Top evidence:")
     for item in ranked[:5]:
@@ -274,4 +280,24 @@ def test_lfi_param(url: str, param: str, max_payloads: int = 16) -> str:
         lines.append("")
         lines.append("Result: likely LFI. Use the payload, URL, and preview above as reproduction evidence.")
 
-    return "\n".join(lines)
+    readable = "\n".join(lines)
+    evidence_data = {
+        "baseline": response_record(baseline).__dict__,
+        "invalid": response_record(invalid).__dict__,
+        "attempts": [item.__dict__ for item in ranked[:5]],
+    }
+    finding = Finding(
+        title="本地文件包含（LFI）验证结果",
+        severity="high", confidence=confidence, category="lfi",
+        evidence=[Evidence(
+            "response_diff", "; ".join(best.evidence) or "Response differs from controls.", best.url,
+            {"payload": best.payload, "status": best.status, "length": best.length, "preview": best.preview},
+        )],
+        reproduction=[f"GET {best.url}", "与 baseline 和无效值请求比较状态码、长度及关键响应片段。"],
+    )
+    return ToolResult(
+        tool="test_lfi_param", target=target_url, status="ok", summary=f"LFI 验证结论：{confidence}",
+        raw_excerpt=readable, findings=[finding],
+        request=RequestRecord("GET", target_url, parameters={param: original_value}, payload=best.payload),
+        response=response_record(baseline), data=evidence_data,
+    ).to_text()

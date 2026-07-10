@@ -10,6 +10,7 @@ import urllib3
 from langchain_core.tools import tool
 
 from .http_client import get, post, request, truncate_text
+from .results import RequestRecord, ToolResult, error_result, response_record
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -29,18 +30,18 @@ def http_get(url: str) -> str:
     try:
         r = get(url)
         headers_str = "\n".join(f"  {k}: {v}" for k, v in r.headers.items())
-        return (
+        readable = (
             f"[GET] {url}\n"
             f"Status: {r.status_code} {r.reason}\n"
             f"Response Headers:\n{headers_str}\n\n"
             f"Body (first 3000 chars):\n{truncate_text(r.text)}"
         )
+        return ToolResult(
+            tool="http_get", target=url, status="ok", summary=f"GET {url}: HTTP {r.status_code}",
+            raw_excerpt=readable, request=RequestRecord("GET", url), response=response_record(r),
+        ).to_text()
     except Exception as e:
-        if e.__class__.__name__ == "Timeout":
-            return f"[GET] {url}\nError: 请求超时"
-        if e.__class__.__name__ == "ConnectionError":
-            return f"[GET] {url}\nError: 无法连接到目标服务器"
-        return f"[GET] {url}\nError: {str(e)}"
+        return error_result("http_get", url, str(e)).to_text()
 
 
 @tool
@@ -58,14 +59,19 @@ def http_post(url: str, data: str = "", content_type: str = "application/x-www-f
     try:
         headers = {"Content-Type": content_type}
         r = post(url, data=data, headers=headers)
-        return (
+        readable = (
             f"[POST] {url}\n"
             f"Payload: {data[:500]}\n"
             f"Status: {r.status_code}\n"
             f"Body (first 3000 chars):\n{truncate_text(r.text)}"
         )
+        return ToolResult(
+            tool="http_post", target=url, status="ok", summary=f"POST {url}: HTTP {r.status_code}",
+            raw_excerpt=readable,
+            request=RequestRecord("POST", url, payload=data, headers=headers), response=response_record(r),
+        ).to_text()
     except Exception as e:
-        return f"[POST] {url}\nError: {str(e)}"
+        return error_result("http_post", url, str(e)).to_text()
 
 
 @tool
@@ -90,7 +96,9 @@ def http_request(
     normalized_method = method.strip().upper()
     if normalized_method not in ALLOWED_HTTP_METHODS:
         allowed = ", ".join(sorted(ALLOWED_HTTP_METHODS))
-        return f"[http_request] {method} {url}\nError: method not allowed; supported methods: {allowed}"
+        return error_result(
+            "http_request", url, f"method not allowed; supported methods: {allowed}"
+        ).to_text()
 
     try:
         headers: dict[str, str] = {}
@@ -113,11 +121,17 @@ def http_request(
             headers=headers or None,
         )
         headers_str = "\n".join(f"  {key}: {value}" for key, value in response.headers.items())
-        return (
+        readable = (
             f"[{normalized_method}] {url}\n"
             f"Status: {response.status_code} {response.reason}\n"
             f"Response Headers:\n{headers_str}\n\n"
             f"Body (first 3000 chars):\n{truncate_text(response.text)}"
         )
+        return ToolResult(
+            tool="http_request", target=url, status="ok",
+            summary=f"{normalized_method} {url}: HTTP {response.status_code}", raw_excerpt=readable,
+            request=RequestRecord(normalized_method, url, payload=data or None, headers=headers),
+            response=response_record(response),
+        ).to_text()
     except Exception as exc:
-        return f"[http_request] {normalized_method} {url}\nError: {exc}"
+        return error_result("http_request", url, str(exc)).to_text()

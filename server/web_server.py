@@ -1,8 +1,8 @@
 """
-FastAPI server for My Agent Web Security Scanner v0.9.
+FastAPI server for My Agent Web Security Scanner v1.0.
 
-v0.9 adds structured scanner-result envelopes to tool events while preserving
-the readable summaries used by the existing workbench.
+v1.0 adds native active-verification evidence while preserving the readable
+summaries used by the existing workbench.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from agent import Agent, AgentConfig
 
 load_dotenv(PROJECT_ROOT / ".env")
 
-APP_VERSION = "0.9.0"
+APP_VERSION = "1.0.0"
 
 app = FastAPI(title="Web Security Scanner", version=APP_VERSION)
 app.add_middleware(

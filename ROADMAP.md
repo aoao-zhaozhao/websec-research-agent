@@ -1,6 +1,6 @@
 # My Agent - 生产级开发路线图
 
-## 当前状态：v0.8
+## 当前状态：v1.0.0
 
 当前 Agent 已具备 Web 安全扫描的基础闭环：
 
@@ -14,16 +14,13 @@
 
 当前短板也很明确：
 
-- 工具输出主要是文本，缺少统一机器可读协议。
-- 漏洞结论依赖 LLM 汇总，证据链不够结构化。
-- 工具层缺少固定靶场回归测试，运行时问题不容易提前发现。
 - 扫描过程还不是显式状态机，长任务恢复、复测、历史对比能力不足。
 
-因此下一阶段优先级调整为：先补证据模型和工具协议，再继续做 UI 2.0。
+因此下一阶段优先级为：进入 v1.1，补显式扫描状态机和基于结构化证据的 UI 2.0。
 
 ---
 
-## v0.9 - 结构化证据协议 + 工具可靠性
+## v0.9 - 结构化证据协议 + 工具可靠性 ✅
 
 > 目标：从“会调用工具的聊天 Agent”升级为“能产出结构化证据的扫描 Agent”。
 
@@ -55,27 +52,41 @@
 
 ---
 
-## v1.0 - 主动验证引擎（DAST Core）
+## v1.0 - 原生证据 + 主动验证引擎（DAST Core）✅
 
-> 目标：把“疑似漏洞”推进为“已验证 / 弱信号 / 未确认”。
+> 目标：将 v0.9 的兼容协议升级为工具原生事实，并把“疑似漏洞”推进为“已验证 / 弱信号 / 未确认”。
+
+### 范围边界
+
+v0.9.1 的原生证据工作并入 v1.0。本版本只完成 SQLi、XSS、LFI 的最小验证闭环；不包含显式状态机、认证扫描、持久化、报告导出或大规模 fuzz。
 
 ### 工程改动
 
 | 模块 | 内容 |
 |---|---|
+| 原生结果模型 | `http_request`、`analyze_headers`、`extract_forms`、`extract_links`、`crawl`、`batch_scan`、`test_lfi_param` 直接构造 `ToolResult`，不再依赖 legacy text adapter |
+| 请求/响应证据 | 每次验证记录方法、URL、参数、payload、状态码、响应长度、关键响应片段和差异摘要 |
 | Baseline 差分 | 同一输入点发送正常值、非法值、payload，比较状态码、长度、关键词和正文相似度 |
-| Payload 模板 | 用 YAML/JSON 定义 SQLi、XSS、LFI、SSRF、命令注入等 payload 族 |
+| Payload 模板 | 用 YAML/JSON 定义受限的 SQLi、XSS、LFI payload 族 |
 | 验证策略 | 根据参数名、表单类型、响应特征选择轻量验证策略 |
-| 时间盲注 | 支持 `SLEEP` / `WAITFOR DELAY` 类 payload 的响应时间统计 |
 | 误报抑制 | 连续失败、弱差异、错误页噪声要降级为 weak 或 unconfirmed |
-| 新工具 | `verify_injection(url, param, vuln_type)`、`fuzz_params(url, method)`、`detect_tech_stack(url)` |
+| 新工具 | `verify_injection(url, param, vuln_type)`，覆盖 GET 查询参数与表单 POST 的最小验证路径 |
 | 证据闭环 | 每个 confirmed finding 必须有 payload、请求摘要、响应摘要、diff 和复现步骤 |
+| 回归靶场 | 用本地 HTTP 靶场和 mock 响应验证成功、弱信号、超时、解析失败和误报降级 |
 
 ### 交付标准
 
-- SQLi / XSS / LFI 至少各有一条可验证路径。
+- SQLi / XSS / LFI 至少各有一条可验证路径和固定回归样例。
+- 核心工具直接输出 `ToolResult`，不再通过文本解析恢复证据字段。
 - 最终报告按证据强度分组：已确认、疑似、信息项、未确认。
 - LLM 不能把 weak signal 写成 confirmed。
+- `v1.0.0-rc1` 已完成本地及授权靶场回归，正式发布 `v1.0.0`。
+
+### 发布验证
+
+- 核心 HTTP、页面分析、爬取、批量扫描与 LFI 工具直接构造 `ToolResult`；兼容包装器只处理尚未迁移的工具。
+- `verify_injection` 已覆盖受限 GET 参数和表单 POST 的 SQLi/XSS/LFI 验证，保留 baseline、无效值、payload、响应片段和差分数据。
+- 本地 HTTP 靶场回归覆盖 SQLi/XSS/LFI confirmed、弱信号、超时和 payload 解析失败；已在授权外部靶场确认 PHP filter LFI 的 Base64 文件读取证据。
 
 ---
 
@@ -181,9 +192,9 @@
 
 | 版本 | 主题 | 核心目标 |
 |---|---|---|
-| v0.8 | 当前版本 | CUDA RAG 加速 + 工作台稳定性 |
-| v0.9 | 证据协议 | 结构化工具结果、证据模型、工具回归测试 |
-| v1.0 | DAST Core | 主动验证、差分证据、误报抑制 |
+| v0.8 | 已发布 | CUDA RAG 加速 + 工作台稳定性 |
+| v0.9 | 已发布 | 结构化工具结果、证据模型、通用 HTTP 方法、工具回归测试 |
+| v1.0 | 已发布 | 原生证据、主动验证、差分证据、误报抑制 |
 | v1.1 | 状态机 + UI | 长任务可观察、结构化漏洞卡片、扫描阶段管理 |
 | v1.2 | 认证扫描 | 登录态、凭证管理、多角色越权检测 |
 | v1.3 | 持久化报告 | SQLite、历史扫描、导出、复测 |

@@ -10,6 +10,7 @@ from langchain_core.tools import tool
 from urllib.parse import urljoin, urlparse
 
 from .http_client import get, in_scope_url
+from .results import Evidence, Finding, RequestRecord, ToolResult, error_result, response_record
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -45,6 +46,7 @@ def analyze_headers(url: str) -> str:
         }
 
         result = [f"安全头分析 - {url}", f"HTTP Status: {r.status_code}", ""]
+        findings: list[Finding] = []
         issues = 0
 
         for header, desc in checks.items():
@@ -52,6 +54,12 @@ def analyze_headers(url: str) -> str:
                 result.append(f"  ✅ {header}: {headers[header]}")
             else:
                 result.append(f"  ❌ {header} — 缺失 ({desc})")
+                findings.append(Finding(
+                    title=f"缺少安全响应头：{header}", severity="low", confidence="confirmed",
+                    category="security_headers",
+                    evidence=[Evidence("header_check", f"{header} is absent", url, {"header": header})],
+                    reproduction=[f"请求 {url} 并检查 {header} 响应头。"],
+                ))
                 issues += 1
 
         # Cookie 安全
@@ -71,9 +79,13 @@ def analyze_headers(url: str) -> str:
             result.append("  ℹ️ 未设置 Cookie")
 
         result.append(f"\n共发现 {issues} 个安全问题")
-        return "\n".join(result)
+        readable = "\n".join(result)
+        return ToolResult(
+            tool="analyze_headers", target=url, status="ok", summary=f"安全头检查发现 {issues} 项问题",
+            raw_excerpt=readable, findings=findings, request=RequestRecord("GET", url), response=response_record(r),
+        ).to_text()
     except Exception as e:
-        return f"analyze_headers Error: {str(e)}"
+        return error_result("analyze_headers", url, str(e)).to_text()
 
 
 @tool
@@ -94,25 +106,37 @@ def extract_forms(url: str) -> str:
         forms = soup.find_all("form")
 
         if not forms:
-            return f"[extract_forms] {url}\n未发现任何表单。"
+            readable = f"[extract_forms] {url}\n未发现任何表单。"
+            return ToolResult(
+                tool="extract_forms", target=url, status="ok", summary="未发现任何表单", raw_excerpt=readable,
+                request=RequestRecord("GET", url), response=response_record(r), data={"forms": []},
+            ).to_text()
 
         result = [f"[extract_forms] {url} — 发现 {len(forms)} 个表单", ""]
+        extracted: list[dict[str, object]] = []
         for i, form in enumerate(forms, 1):
             action = form.get("action", "(当前页面)")
             method = form.get("method", "GET").upper()
             result.append(f"表单 #{i}: {method} {action}")
 
             inputs = form.find_all(["input", "textarea", "select"])
+            field_list: list[dict[str, str]] = []
             for inp in inputs:
                 tag = inp.name
                 name = inp.get("name", "(无名称)")
                 itype = inp.get("type", "text") if tag == "input" else tag
                 result.append(f"  [{itype}] {name}")
+                field_list.append({"name": name, "type": itype})
+            extracted.append({"action": urljoin(url, action) if action != "(当前页面)" else url, "method": method, "fields": field_list})
             result.append("")
 
-        return "\n".join(result)
+        readable = "\n".join(result)
+        return ToolResult(
+            tool="extract_forms", target=url, status="ok", summary=f"发现 {len(extracted)} 个表单",
+            raw_excerpt=readable, request=RequestRecord("GET", url), response=response_record(r), data={"forms": extracted},
+        ).to_text()
     except Exception as e:
-        return f"extract_forms Error: {str(e)}"
+        return error_result("extract_forms", url, str(e)).to_text()
 
 
 @tool
@@ -132,6 +156,7 @@ def extract_links(url: str) -> str:
 
         base_domain = urlparse(url).netloc
         internal, external = [], []
+        internal_urls, external_urls = [], []
 
         for link in links:
             href = urljoin(url, link["href"])
@@ -144,8 +169,10 @@ def extract_links(url: str) -> str:
                     continue
                 entry = f"  {scoped}  — {label}"
                 internal.append(entry)
+                internal_urls.append(scoped)
             else:
                 external.append(entry)
+                external_urls.append(href)
 
         result = [
             f"[extract_links] {url}",
@@ -155,6 +182,11 @@ def extract_links(url: str) -> str:
         result.append(f"\n外部链接 ({len(external)}) — 不扫描:")
         result.extend(external[:10])
         result.append(f"\n总计: {len(internal) + len(external)} 个链接")
-        return "\n".join(result)
+        readable = "\n".join(result)
+        return ToolResult(
+            tool="extract_links", target=url, status="ok", summary=f"发现 {len(internal_urls)} 个同源链接",
+            raw_excerpt=readable, request=RequestRecord("GET", url), response=response_record(r),
+            data={"internal_links": internal_urls, "external_links": external_urls},
+        ).to_text()
     except Exception as e:
-        return f"extract_links Error: {str(e)}"
+        return error_result("extract_links", url, str(e)).to_text()

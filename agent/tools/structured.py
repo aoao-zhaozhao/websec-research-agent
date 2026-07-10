@@ -6,7 +6,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
-from .results import legacy_result
+from .results import parse_tool_result, legacy_result
 
 
 def structured_tool(tool: Any) -> StructuredTool:
@@ -14,6 +14,9 @@ def structured_tool(tool: Any) -> StructuredTool:
 
     def invoke(**kwargs: Any) -> str:
         output = tool.invoke(kwargs)
+        _readable, result = parse_tool_result(output)
+        if result is not None:
+            return str(getattr(output, "content", output))
         return legacy_result(tool.name, kwargs, output).to_text()
 
     return StructuredTool.from_function(

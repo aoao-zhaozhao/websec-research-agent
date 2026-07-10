@@ -1,0 +1,5 @@
+{
+  "sqli": ["'", "\"", "' OR '1'='1"],
+  "xss": ["<myagent-xss-probe>", "\"><myagent-xss-probe>"],
+  "lfi": ["convert.base64-encode", "../../etc/passwd", "C:/Windows/win.ini", "php://filter/convert.base64-encode/resource=index.php"]
+}

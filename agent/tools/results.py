@@ -34,6 +34,8 @@ class RequestRecord:
     method: str
     url: str
     parameters: dict[str, Any] = field(default_factory=dict)
+    payload: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -41,6 +43,7 @@ class ResponseRecord:
     status_code: int | None = None
     content_type: str | None = None
     body_length: int | None = None
+    excerpt: str = ""
 
 
 @dataclass
@@ -79,17 +82,49 @@ class ToolResult:
         )
 
 
-def error_kind(message: str) -> str:
-    lower = message.lower()
-    if "timeout" in lower or "超时" in message:
+def error_kind(message: str | Exception) -> str:
+    exception_name = message.__class__.__name__.lower() if isinstance(message, Exception) else ""
+    text = str(message)
+    lower = text.lower()
+    if "timeout" in exception_name:
         return "timeout"
-    if "connection" in lower or "无法连接" in message:
+    if "connection" in exception_name:
         return "connection_error"
-    if "parse" in lower or "解析" in message:
+    if "jsondecode" in exception_name:
         return "parse_error"
-    if "scope" in lower or "同域" in message:
+    if "timeout" in lower or "超时" in text:
+        return "timeout"
+    if "connection" in lower or "无法连接" in text:
+        return "connection_error"
+    if "parse" in lower or "解析" in text:
+        return "parse_error"
+    if "scope" in lower or "同域" in text:
         return "out_of_scope"
     return "tool_bug"
+
+
+def response_record(response: Any, excerpt_limit: int = 800) -> ResponseRecord:
+    """Capture the bounded response facts required to reproduce a finding."""
+    text = str(getattr(response, "text", ""))
+    headers = getattr(response, "headers", {}) or {}
+    return ResponseRecord(
+        status_code=getattr(response, "status_code", None),
+        content_type=str(headers.get("Content-Type", "")).split(";", 1)[0] or None,
+        body_length=len(text),
+        excerpt=text[:excerpt_limit],
+    )
+
+
+def error_result(tool: str, target: str, message: str | Exception) -> ToolResult:
+    """Build a native, classified error result without parsing presentation text."""
+    return ToolResult(
+        tool=tool,
+        target=target,
+        status="error",
+        summary=f"{tool} failed: {message}",
+        errors=[{"kind": error_kind(message), "message": str(message)[:500]}],
+        raw_excerpt=f"[{tool}] {target}\nError: {message}",
+    )
 
 
 def _target_from_input(arguments: dict[str, Any]) -> str:

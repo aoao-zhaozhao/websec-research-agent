@@ -1,6 +1,6 @@
 # My Agent — Web 漏洞审查引擎
 
-基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。支持自动爬取、JS/API 发现、SPA 渲染、JWT 审计、LFI 专项验证、漏洞探测、RAG 知识库验证和安全头分析。通过 FastAPI + WebSocket 提供服务。
+基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。支持自动爬取、JS/API 发现、SPA 渲染、JWT 审计、SQLi/XSS/LFI 受限差分验证、RAG 知识库验证和安全头分析。通过 FastAPI + WebSocket 提供服务。
 
 ## 项目结构
 
@@ -130,7 +130,7 @@ Agent 会自动：
 3. analyze_js / discover_api 提取 JS 中的 API、JWT、密钥、sourcemap 和调试开关
 4. 对 SPA 页面用 render_page 提取渲染后 DOM 和网络请求
 5. batch_scan 批量检查安全头
-6. 深入每个输入点注入轻量 XSS/SQLi payload
+6. 对授权输入点调用 `verify_injection`，用 baseline、无效值和受限 SQLi/XSS/LFI payload 做差分验证
 7. 对疑似 LFI 参数调用 `test_lfi_param` 做 bounded payload 验证、响应差分和 flag-like 提取
 8. **search_knowledge 查知识库验证**，匹配漏洞分类、CVE/CVSS 参考和修复方案
 9. 输出完整安全审计报告（类型 + 风险等级 + 参考分类/CVE + 证据 + 修复建议）
@@ -171,6 +171,7 @@ Web 工作台底部按钮：
 | `discover_api(url)` | 探测 OpenAPI / Swagger / GraphQL / 常见 API 入口 |
 | `render_page(url)` | 使用 Playwright 渲染 SPA，提取 DOM、同域请求和链接 |
 | `test_lfi_param(url, param)` | 对疑似 LFI 参数做 bounded payload 验证、响应差分和 flag-like 提取 |
+| `verify_injection(url, param, vuln_type, method, form_data)` | 对 GET 参数或表单 POST 做受限 SQLi/XSS/LFI 验证，记录控制请求、payload 和差分证据 |
 | `crawl(url, depth, pages)` | BFS 爬虫，自动发现所有同域页面 + 16 个敏感路径探测 |
 | `sitemap(url)` | 攻击面分类统计（登录页/表单/API/管理后台/静态资源） |
 | `batch_scan(url)` | 批量扫描所有页面安全头 + 整体安全评级 |
@@ -247,10 +248,16 @@ Web 工作台底部按钮：
 - **前端布局修复**: 消息区独立滚动，输入栏固定在工作台底部，不再随对话增长被挤出视口
 - **会话历史设计澄清**: 当前为 `localStorage` 本地缓存，后续后端持久化将参考 transcript/SQLite 方案实现
 
-### v0.9 — 结构化证据协议 + 工具可靠性 ⭐ 当前
+### v0.9 — 结构化证据协议 + 工具可靠性
 - **统一结果协议**: 所有注册扫描工具返回可读摘要和 `ToolResult` JSON envelope，包含 `tool`、`target`、`status`、`summary`、`findings`、`errors`、`raw_excerpt`、请求/响应记录扩展字段
 - **事件透传**: `tool_end` 在保留原有 `output` 摘要的同时发送机器可读 `result`，前端工具卡片可查看结构化证据
 - **错误分类**: 超时、连接、解析、范围和工具故障以统一错误类型输出
 - **统一请求路径**: `extract_links` 改用 `http_client`，复用同源边界、超时、限速和重试策略
 - **HTTP 方法验证**: 新增 `http_request`，在源码或 `Allow` 响应头明确要求时可执行 PUT/PATCH 等受约束方法
 - **回归测试**: 新增 mock HTTP 测试，覆盖安全头、空表单、链接、超时、爬取和 LFI 基线失败
+
+### v1.0.0 — 原生证据 + 主动验证引擎 ⭐ 当前
+- **原生 ToolResult**: `http_request`、页面分析、爬取、批量扫描和 LFI 工具直接构造请求、响应和 finding 证据，不再由文本适配器恢复字段
+- **主动验证**: 新增 `verify_injection`，只允许授权范围内的 GET / 表单 POST，并对 SQLi、XSS、LFI 建立 baseline、无效值和受限 payload 差分
+- **证据强度**: 统一使用 `confirmed` / `likely` / `weak` / `unconfirmed`，报告按已确认、疑似、信息项、未确认分组；弱信号不得提升为已确认
+- **靶场回归**: 本地 HTTP 靶场覆盖三类 confirmed 信号、弱信号、POST、超时和 payload 解析失败

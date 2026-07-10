@@ -42,8 +42,18 @@ class RAGManager:
         self._reranker = None
         self._reranker_tokenizer = None
         self._reranker_model = None
+        self._torch_device = None
 
     # ── Lazy properties ────────────────────────────
+
+    @property
+    def torch_device(self) -> str:
+        if self._torch_device is None:
+            import torch
+
+            self._torch_device = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"[RAG] Torch device: {self._torch_device}")
+        return self._torch_device
 
     @property
     def client(self):
@@ -59,12 +69,14 @@ class RAGManager:
             from chromadb.utils import embedding_functions
             if os.path.isdir(self.model_dir):
                 self._embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                    model_name=self.model_dir
+                    model_name=self.model_dir,
+                    device=self.torch_device,
                 )
             else:
                 print(f"[RAG] 本地 Embedding 模型未找到 ({self.model_dir})，回退 HuggingFace")
                 self._embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                    model_name="Qwen/Qwen3-Embedding-0.6B"
+                    model_name="Qwen/Qwen3-Embedding-0.6B",
+                    device=self.torch_device,
                 )
         return self._embedding_fn
 
@@ -103,10 +115,12 @@ class RAGManager:
         self._reranker_tokenizer = AutoTokenizer.from_pretrained(
             path, padding_side="left"
         )
+        device = self.torch_device
+        dtype = torch.float16 if device == "cuda" else torch.float32
         self._reranker_model = AutoModelForCausalLM.from_pretrained(
             path,
-            dtype=torch.float32,  # CPU inference
-        ).eval()
+            dtype=dtype,
+        ).to(device).eval()
 
         # —— yes/no token IDs ——
         self._token_false_id = self._reranker_tokenizer.convert_tokens_to_ids("no")
@@ -244,27 +258,40 @@ class RAGManager:
             import torch
 
             max_len = 8192
-            inputs = self._reranker_tokenizer(
-                pairs,
-                padding=False,
-                truncation="longest_first",
-                return_attention_mask=False,
-                max_length=max_len - len(self._prefix_tokens) - len(self._suffix_tokens),
-            )
-            for i, ele in enumerate(inputs["input_ids"]):
-                inputs["input_ids"][i] = (
-                    self._prefix_tokens + ele + self._suffix_tokens
+            scores = []
+            batch_size = 2 if self.torch_device == "cuda" else len(pairs)
+            for start in range(0, len(pairs), batch_size):
+                batch_pairs = pairs[start : start + batch_size]
+                inputs = self._reranker_tokenizer(
+                    batch_pairs,
+                    padding=False,
+                    truncation="longest_first",
+                    return_attention_mask=False,
+                    max_length=max_len - len(self._prefix_tokens) - len(self._suffix_tokens),
                 )
-            inputs = self._reranker_tokenizer.pad(
-                inputs, padding="max_length", return_tensors="pt", max_length=max_len
-            )
+                for i, ele in enumerate(inputs["input_ids"]):
+                    inputs["input_ids"][i] = (
+                        self._prefix_tokens + ele + self._suffix_tokens
+                    )
+                inputs = self._reranker_tokenizer.pad(
+                    inputs, padding=True, return_tensors="pt"
+                )
+                inputs = inputs.to(self.torch_device)
 
-            with torch.no_grad():
-                batch_logits = self._reranker_model(**inputs).logits[:, -1, :]
-                true_vec = batch_logits[:, self._token_true_id]
-                false_vec = batch_logits[:, self._token_false_id]
-                stacked = torch.stack([false_vec, true_vec], dim=1)
-                scores = torch.nn.functional.log_softmax(stacked, dim=1)[:, 1].exp().tolist()
+                with torch.no_grad():
+                    try:
+                        logits = self._reranker_model(**inputs, logits_to_keep=1).logits
+                    except TypeError:
+                        logits = self._reranker_model(**inputs).logits
+                    batch_logits = logits[:, -1, :]
+                    true_vec = batch_logits[:, self._token_true_id]
+                    false_vec = batch_logits[:, self._token_false_id]
+                    stacked = torch.stack([false_vec, true_vec], dim=1)
+                    scores.extend(
+                        torch.nn.functional.log_softmax(stacked, dim=1)[:, 1]
+                        .exp()
+                        .tolist()
+                    )
 
             # Sort by reranker score descending
             ranked = sorted(
@@ -284,7 +311,11 @@ class RAGManager:
 
         except Exception as e:
             # Reranker 失败时降级为 top_k 按原距离返回
-            print(f"[RAG] ⚠️ Reranker 失败 ({e})，降级为距离排序")
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print(f"[RAG] Reranker failed ({e}); fallback to distance ranking")
             return (
                 docs[: self.top_k],
                 metas[: self.top_k],

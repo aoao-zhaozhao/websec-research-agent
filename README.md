@@ -11,7 +11,7 @@ my-agent/
 ├── agent/
 │   ├── __init__.py             # 模块入口
 │   ├── config.py               # 配置管理 (AgentConfig)
-│   ├── prompts.py              # System Prompt (v0.7 工作流)
+│   ├── prompts.py              # System Prompt (v0.8 工作流)
 │   ├── agent.py                # Agent 核心引擎 (LangGraph)
 │   ├── rag.py                  # RAG 知识库 (Chroma + Qwen3 两阶段检索)
 │   ├── core.py                 # 向后兼容重导出
@@ -91,7 +91,15 @@ cp -r agent/models/models/Qwen--Qwen3-Reranker-0.6B/snapshots/master agent/model
 rm -rf agent/models/models agent/models/.lock
 ```
 
-> 模型共 ~2.4GB，首次启动时会自动索引知识库文档。
+> 模型共 ~2.4GB，首次启动时会自动索引知识库文档。v0.8 起 RAG 会自动检测 CUDA：可用时 Embedding 和 Reranker 使用 GPU，否则回退 CPU。
+
+如需在 Windows + NVIDIA GPU 环境启用 CUDA 版 PyTorch，可按实际驱动选择 PyTorch wheel。当前验证过的组合：
+
+```powershell
+python -m pip install --upgrade --force-reinstall --no-deps "https://mirrors.aliyun.com/pytorch-wheels/cu130/torch-2.12.1%2Bcu130-cp313-cp313-win_amd64.whl"
+python -m pip install "setuptools<82" -i https://pypi.tuna.tsinghua.edu.cn/simple
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
+```
 
 ### 4. 启动服务
 
@@ -137,7 +145,7 @@ Web 工作台底部按钮：
 | `■` | 停止当前扫描，不清空当前会话 |
 | `×` | 清空当前会话内容和 Agent 记忆 |
 
-关闭浏览器标签页会断开 WebSocket，会话生命周期随连接结束。`×` 只清空内容，`■` 用于取消正在运行的扫描任务。
+关闭浏览器标签页会断开 WebSocket，会话生命周期随连接结束。当前侧边栏会话保存在浏览器 `localStorage`，不是后端持久化；换浏览器、换端口或清理站点数据后可能丢失。`×` 只清空内容，`■` 用于取消正在运行的扫描任务。
 
 ## API 接口
 
@@ -223,10 +231,17 @@ Web 工作台底部按钮：
 - **SPA 渲染**: 新增 `render_page`，通过 Playwright 提取渲染后 DOM 和网络请求
 - **System Prompt**: 先做 JS/API/SPA 攻击面发现，再进入漏洞验证和知识库检索
 
-### v0.7 — LFI 专项验证 + 工作台 UI ⭐ 当前
+### v0.7 — LFI 专项验证 + 工作台 UI
 - **LFI 专项工具**: 新增 `test_lfi_param(url, param)`，自动建立 baseline、测试有限 payload、做响应差分和证据评分
 - **Flag 提取**: 自动匹配 `flag{...}` / `ctf{...}` / `BUGKU{...}` / `key{...}` 等常见格式
 - **工具事件流**: `Agent.run_events()` 透传 `tool_start` / `tool_end`，前端实时展示工具轨迹
 - **停止扫描**: WebSocket 支持 `stop` 命令，前端新增 `■` 停止按钮
 - **工作台 UI**: 会话历史、阶段进度、Markdown 报告、工具卡片和风险摘录
 - **发布口径**: 原计划 v0.8 的核心 UI 能力合并到 v0.7 发布，tag 为 `v0.7`
+
+### v0.8 — CUDA RAG 加速 + 工作台稳定性 ⭐ 当前
+- **CUDA 运行环境**: 验证 Windows + NVIDIA GPU 下 `torch 2.12.1+cu130`，`torch.cuda.is_available()` 正常返回 `True`
+- **RAG 自动设备选择**: Embedding 和 Reranker 统一使用 `cuda` / `cpu` 自动选择
+- **Reranker 显存控制**: GPU 下使用 `float16`、小批量推理和动态 padding，避免固定 8192 token padding 导致 12GB 显存 OOM
+- **前端布局修复**: 消息区独立滚动，输入栏固定在工作台底部，不再随对话增长被挤出视口
+- **会话历史设计澄清**: 当前为 `localStorage` 本地缓存，后续后端持久化将参考 transcript/SQLite 方案实现

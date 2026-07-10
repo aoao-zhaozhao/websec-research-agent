@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Web Security Scanner v0.7</title>
+<title>Web Security Scanner v0.8</title>
 <style>
   :root {
     --bg: #111311;
@@ -23,7 +23,10 @@
   }
 
   * { box-sizing: border-box; }
-  html, body { height: 100%; }
+  html, body {
+    height: 100%;
+    overflow: hidden;
+  }
   body {
     margin: 0;
     background: var(--bg);
@@ -50,6 +53,8 @@
 
   .app {
     height: 100vh;
+    min-height: 0;
+    overflow: hidden;
     display: grid;
     grid-template-columns: 280px minmax(0, 1fr);
   }
@@ -121,6 +126,8 @@
   }
   .main {
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
     background: linear-gradient(180deg, #171a16 0%, #111311 100%);
@@ -179,7 +186,9 @@
     grid-template-columns: minmax(0, 1fr) 360px;
   }
   .conversation {
+    min-height: 0;
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 18px;
   }
   .rail {
@@ -315,6 +324,7 @@
     border-top: 1px solid var(--line);
     padding: 12px 18px;
     background: rgba(24, 27, 24, .95);
+    z-index: 2;
   }
   .input-row {
     display: grid;
@@ -364,7 +374,7 @@
     <div class="brand">
       <div>
         <h1>Web Security Scanner</h1>
-        <div class="version">v0.7</div>
+        <div class="version">v0.8</div>
       </div>
       <button class="icon-btn" id="newSessionBtn" title="新建会话">+</button>
     </div>

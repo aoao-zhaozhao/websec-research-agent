@@ -20,6 +20,7 @@ from .skill_tools import (
     skill_view,
     scan_reflect,
 )
+from .case_tools import case_create
 from .ssrf_tools import test_ssrf, probe_internal_port
 from .command_injection_tools import test_command_injection, test_ssti
 from .jwt_attack_tools import jwt_alg_none_attack, jwt_hmac_brute, jwt_key_confusion
@@ -78,6 +79,7 @@ BASE_TOOLS = [
         skill_pin,
         skill_archive,
         skill_restore,
+        case_create,
         scan_reflect,
     )
 ]
@@ -120,6 +122,7 @@ __all__ = [
     "skill_pin",
     "skill_archive",
     "skill_restore",
+    "case_create",
     "scan_reflect",
     "BASE_TOOLS",
 ]

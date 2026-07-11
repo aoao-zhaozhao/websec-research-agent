@@ -1,10 +1,12 @@
 # WebSec Research Agent — Web 漏洞审查引擎
 
-基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。覆盖 **SQLi / XSS / 命令注入 / SSTI / LFI / SSRF / JWT 攻击 / IDOR / 提权 / OOB 外带确认** 共 10 大攻击类别，38 个注册工具，80+ 内置 payload，8 个 RAG 知识库文件。通过 FastAPI + WebSocket 提供可观察的扫描阶段、实时工具轨迹和漏洞证据工作台。工具目录面板可一览全部能力。
+基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。覆盖 **SQLi / XSS / 命令注入 / SSTI / LFI / SSRF / JWT 攻击 / IDOR / 提权 / OOB 外带确认** 共 10 大攻击类别，39 个注册工具，80+ 内置 payload。通过 FastAPI + WebSocket 提供可观察的扫描阶段、实时工具轨迹和漏洞证据工作台。v1.6 引入“案例优先、技能晋升制”：已解决任务先保存为可检索的 RAG 案例，只有多个独立案例重复验证的模式才会晋升为 Skill。
 
 > **v1.4** 从 [Shannon OSS](https://github.com/keygraph/shannon)（AI 白盒渗透测试引擎）迁移了 SSRF、命令注入、SSTI、JWT 攻击、授权攻击和 OOB 盲确认等攻击模式。所有工具为 Python 原创实现，设计思路源自 Shannon 的提示词架构。
 >
 > **v1.5** 新增代码驱动的技能遥测、确定性生命周期、durable review job、lease/retry worker 和持久化维护指令，形成最小完整自进化闭环。
+>
+> **v1.6** 新增案例记忆库、递归增量 RAG 索引和 `case_create`；DeepSeek curator 审查 agent-created Skill 的语义重复性；Skill 创建需要至少两条同类案例支持，避免“一题一 Skill”的知识库膨胀。
 
 ## 项目结构
 
@@ -18,10 +20,11 @@ my-agent/
 │   ├── prompts.py              # System Prompt (v1.4 全类别工作流)
 │   ├── agent.py                # Agent 核心引擎 (LangGraph)
 │   ├── rag.py                  # RAG 知识库 (Chroma + Qwen3 两阶段检索)
+│   ├── case_manager.py         # 案例记忆管理 (写入 knowledge/cases/)
 │   ├── core.py                 # 向后兼容重导出
 │   ├── scan_state.py           # 6 阶段扫描状态机
 │   ├── skill_manager.py        # 技能生命周期管理 ← v1.3
-│   ├── evolution/              # 遥测、确定性生命周期、Nudge Job
+│   ├── evolution/              # 遥测、生命周期、DeepSeek curator、Nudge Job
 │   ├── session_db.py           # SQLite 持久化 (FTS5) ← v1.3
 │   ├── tools/                  # 扫描工具集（38 个工具）
 │   │   ├── http_tools.py       #   http_get / http_post / http_request
@@ -36,13 +39,15 @@ my-agent/
 │   │   ├── jwt_attack_tools.py #   jwt_alg_none_attack / jwt_hmac_brute / jwt_key_confusion ← v1.4
 │   │   ├── authz_tools.py      #   test_idor / test_privilege_escalation / test_role_manipulation ← v1.4
 │   │   ├── oob_tools.py        #   generate_oob_payload / check_oob_callbacks ← v1.4
-│   │   ├── skill_tools.py      #   技能查看、使用、创建、维护、归档与恢复
+│   │   ├── skill_tools.py      #   技能查看、晋升、维护、归档与恢复
+│   │   ├── case_tools.py       #   case_create：保存可检索案例
 │   │   ├── structured.py       #   ToolResult 协议包装器
 │   │   ├── results.py          #   ToolResult / Finding / Evidence 数据模型
 │   │   └── http_client.py      #   统一请求、同域边界、超时、限速、重试
 │   ├── payloads/
 │   │   └── injection.json      # 19 类别 × 80+ payload (SQLi盲注/UNION/NoSQL/命令注入/SSTI/SSRF/XXE) ← v1.4
 │   ├── knowledge/              # 知识库 Markdown 源文件（8 个）
+│   │   ├── cases/              #   已解决任务案例（RAG 自动增量索引）
 │   │   ├── owasp_top10.md      #   OWASP Top 10 (2021) 全 10 类 + 检测/修复
 │   │   ├── common_cves.md      #   精选 CVE 案例 (Log4Shell/Spring4Shell/XSS/SSRF...)
 │   │   ├── remediation.md      #   代码级修复方案 (Python/Java/Nginx/Apache)
@@ -76,6 +81,8 @@ DEEPSEEK_REASONING_EFFORT=high
 DEEPSEEK_SHOW_REASONING=true
 AGENT_MAX_TURNS=120
 AGENT_HISTORY_MESSAGES=24
+SKILL_LLM_CURATION_ENABLED=true
+SKILL_LLM_CURATION_MIN_CONFIDENCE=0.92
 ```
 
 `deepseek-v4-flash` 用于默认扫描；在"模型与思考"设置中可切换到 `deepseek-v4-pro`。思考模式显式传递 `thinking.enabled` 和 `reasoning_effort`（`high` / `max`），运行时不会传递与思考模式不兼容的 `temperature`。模型、思考开关和强度会在下一次扫描生效。
@@ -157,7 +164,8 @@ Agent 覆盖 10 大攻击类别，38 个工具自动协作：
 | OOB 确认 | generate_oob_payload + check_oob_callbacks (盲 SSRF/命令注入/SQLi/XXE) |
 | 高级利用 | css_exfil_payload + webhook_reconstruct (CSS 数据外带) |
 | 知识验证 | search_knowledge (RAG 两阶段检索 → OWASP/CVE/CVSS/修复) |
-| 自进化 | scan_reflect → skill_create / skill_patch (沉淀成功模式) |
+| 案例记忆 | scan_reflect → case_create（保存证据、解题链和失败路径，供 RAG 检索） |
+| 技能治理 | DeepSeek curator 合并高置信重复 Skill；两条独立案例后才允许 skill_create 晋升 |
 | 报告 | 按 confirmed / likely / weak / unconfirmed 分组 + 证据 + 复现步骤 + 修复建议 |
 
 ## API 接口
@@ -166,12 +174,13 @@ Agent 覆盖 10 大攻击类别，38 个工具自动协作：
 |---|---|---|
 | `/api/chat` | WebSocket | 核心对话——逐 token 流式输出，提供 `scan_started`、`stage_started`、`stage_progress`、`tool_started`、`tool_finished`、`finding_created`、`scan_finished` 事件 |
 | `/api/config` | GET/PUT | 查看/修改模型、thinking 开关、`high/max` 强度、最大步骤和会话历史窗口 |
-| `/api/tools` | GET | 工具目录——返回 38 个工具按 9 类别分组，含名称、描述、参数 Schema |
+| `/api/tools` | GET | 工具目录——返回 39 个工具按类别分组，含名称、描述、参数 Schema |
+| `/api/skills` | GET | 返回已学习 Skill 的生命周期状态、标签和使用遥测，供工具目录动态展示 |
 | `/api/evolution` | GET | 查看工具计数、review job、待处理指令和近期审查报告 |
 | `/api/sessions` | GET | 活跃连接数 |
 | `/api/health` | GET | 健康检查 |
 
-## 扫描工具（38 个）
+## 扫描工具（39 个）
 
 ### 🌐 HTTP 基础
 | 工具 | 说明 |
@@ -240,16 +249,17 @@ Agent 覆盖 10 大攻击类别，38 个工具自动协作：
 | `skill_list(category)` | 列出技能库中所有已沉淀的经验技能 |
 | `skill_view(name)` | 只查看技能并记录 view 遥测，不计为使用 |
 | `skill_load(name)` | 加载指定技能到当前扫描上下文 |
-| `skill_create(title, description, body, category, tags)` | 将成功经验沉淀为可复用技能 |
+| `case_create(target, title, summary, evidence, solution, ...)` | 将已解决任务保存为 RAG 案例；禁止保存 flag、凭据或 token |
+| `skill_create(title, description, body, category, tags)` | 仅在至少两条同类案例支持时，将稳定模式晋升为可复用技能 |
 | `skill_patch(name, old_text, new_text)` | 改进已有技能 |
 | `skill_pin(name, pinned)` | 设置或取消自动归档保护 |
 | `skill_archive(name, absorbed_into)` | 将 agent-created 技能软归档到 `.archive/` |
 | `skill_restore(name)` | 恢复已归档技能 |
-| `scan_reflect(target, findings_summary, successful_techniques, failed_attempts)` | 扫描后反思：分析得失并建议技能创建/更新 |
+| `scan_reflect(target, findings_summary, successful_techniques, failed_attempts)` | 扫描后反思：默认建议创建案例；重复验证后再建议晋升/更新 Skill |
 
-> `/api/tools` 暴露 **38 个基础工具**；RAG 初始化成功时，Agent 运行时还会动态加入 `search_knowledge`。点击工作台侧边栏 📦 按钮可查看基础工具目录。
+> `/api/tools` 暴露 **39 个基础工具**；RAG 初始化成功时，Agent 运行时还会动态加入 `search_knowledge`。工具目录会通过 `/api/skills` 显示已学习 Skill，不再把案例混入工具列表。
 
-技能内容保存在 `agent/skills/`，可变遥测与生命周期状态保存在 `data/evolution.db`。业务工具每完成 10 次会持久化一个幂等 `skill_review` job；带 lease/retry 的 worker 自动审查结构化工具结果。发现未覆盖的 confirmed/likely 经验时，代码会持续向主 Agent 注入维护指令，直到成功创建/更新技能或明确反思为无新增。每轮结束还会由纯 Python 规则执行 `active → stale → archived` 流转。`bundled`、已 pin 或被保护引用的技能不会被自动归档。
+案例保存于 `agent/knowledge/cases/`，与 OWASP/CVE 文档一起由 Chroma + Qwen3 两阶段检索；案例包含前提、证据、解决链和失败路径，但不得包含 flag、凭据或 token。技能内容保存在 `agent/skills/`，可变遥测与生命周期状态保存在 `data/evolution.db`。业务工具每完成 10 次会持久化一个幂等 `skill_review` job；带 lease/retry 的 worker 自动审查结构化工具结果。DeepSeek curator 仅合并高置信重复的 agent-created Skill，且归档可恢复。`bundled`、已 pin 或被保护引用的技能不会被自动归档。
 
 ## 架构
 
@@ -354,3 +364,10 @@ Agent 覆盖 10 大攻击类别，38 个工具自动协作：
 - 纯代码审查 confirmed / likely 证据，并持久化未完成维护指令
 - `active → stale → archived` 确定性生命周期、Pin、引用保护、软归档和恢复
 - 新增 `/api/evolution` 状态接口，基础工具总数提升至 38
+
+### v1.6.0 — 案例优先的 DeepSeek 记忆治理（当前）
+- 新增 `case_create` 与 `agent/knowledge/cases/`：已解决任务先沉淀为结构化案例，再通过 RAG 按技术栈、参数和证据特征检索
+- RAG 改为递归、增量索引，检索结果标记 `reference` 或 `case` 来源
+- DeepSeek curator 仅合并高置信重复 Skill；归档记录可恢复并保留审计证据
+- `skill_create` 强制要求至少两条同分类且标签重叠的独立案例，阻止单题经验污染 Skill 库
+- 新增 `/api/skills`，工具目录动态展示已学习 Skill；基础工具总数为 39

@@ -22,6 +22,7 @@ from ..skill_manager import (
     SkillAlreadyExistsError,
     get_skill_manager,
 )
+from ..case_manager import get_case_manager
 from .results import Evidence, Finding, ToolResult, error_result
 
 
@@ -183,6 +184,14 @@ def skill_create(
         return error_result("skill_create", title, f"Unknown category '{cat}'. {_category_help()}").to_text()
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    supporting_cases = get_case_manager().count_similar(cat, tag_list)
+    if supporting_cases < 2:
+        return error_result(
+            "skill_create",
+            title,
+            "Skill promotion requires at least two independent matching case records. "
+            f"Found {supporting_cases}; save more case_create records first.",
+        ).to_text()
 
     try:
         meta = mgr.create(
@@ -358,8 +367,11 @@ def scan_reflect(target: str, findings_summary: str, successful_techniques: str 
         lines.append("## 成功经验")
         lines.append(successful_techniques.strip())
         lines.append("")
+        lines.append("## Case Memory")
+        lines.append("Record this episode with case_create. Promote a case to a skill only after repeated independent evidence.")
+        lines.append("")
         suggestions.append({
-            "action": "consider_skill_create",
+            "action": "consider_case_create",
             "reason": "成功的技术应沉淀为技能，供后续扫描复用",
             "source": successful_techniques.strip()[:500],
         })

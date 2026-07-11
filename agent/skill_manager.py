@@ -247,10 +247,61 @@ class SkillManager:
         """Backward-compatible soft delete."""
         return self.archive(name)
 
+    def merge(
+        self,
+        keep_name: str,
+        absorbed_names: list[str],
+        *,
+        description: str,
+        body: str,
+        tags: list[str] | None = None,
+    ) -> bool:
+        """Replace one agent skill with a curated version and archive duplicates."""
+        absorbed = [name for name in dict.fromkeys(absorbed_names) if name != keep_name]
+        if not absorbed or not body.strip() or len(body) > 20_000:
+            return False
+
+        with self._lock:
+            keep_path = self._find_skill(keep_name)
+            if keep_path is None:
+                return False
+            names = [keep_name, *absorbed]
+            records = [self.store.get_skill(name) for name in names]
+            if any(record is None for record in records):
+                return False
+            if any(
+                str(record["source"]) != "agent"
+                or str(record["state"]) == "archived"
+                or bool(record["pinned"])
+                or bool(record["protected_reference"])
+                for record in records
+            ):
+                return False
+
+            meta = self._parse_frontmatter(keep_path)
+            meta.description = description.strip()[:1024] or meta.description
+            meta.tags = sorted({str(tag).strip()[:64] for tag in (tags or meta.tags) if str(tag).strip()})
+            meta.updated_at = now_iso()
+            content = f"---\n{meta.to_frontmatter()}\n---\n\n# {meta.name}\n\n{body.strip()}\n"
+            self._atomic_write(keep_path, content)
+            self._register(keep_path, meta)
+            self.store.bump(meta.name, "patch")
+            return all(self.archive(name, absorbed_into=keep_name) for name in absorbed)
+
     def archive(self, name: str, absorbed_into: str | None = None) -> bool:
         path = self._find_skill(name)
         if path is None:
-            return False
+            record = self.store.get_skill(name)
+            if (
+                record is None
+                or str(record["source"]) != "agent"
+                or bool(record["pinned"])
+                or bool(record["protected_reference"])
+            ):
+                return False
+            # Old database records can outlive a deleted skill document. Keep
+            # the audit trail, but remove the broken entry from active use.
+            return self.store.set_state(name, "archived", absorbed_into=absorbed_into)
         meta = self._parse_frontmatter(path)
         record = self._register(path, meta)
         if bool(record["pinned"]) or bool(record["protected_reference"]):

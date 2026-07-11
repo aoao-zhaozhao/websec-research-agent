@@ -95,11 +95,11 @@ class RAGManager:
                     for meta_list in self._collection.get(include=["metadatas"]).get("metadatas", [])
                     for meta in [meta_list] if isinstance(meta, dict)
                 )
-                md_files = {f.name for f in self.knowledge_dir.glob("*.md")}
-                new_files = md_files - existing
+                md_files = self._knowledge_files()
+                new_files = [f for f in md_files if self._source_name(f) not in existing]
                 if new_files:
                     print(f"[RAG] 检测到新知识文件: {new_files}")
-                    self._index_documents()
+                    self._index_documents(new_files)
             except Exception:
                 self._collection = self.client.create_collection(
                     name=name,
@@ -158,8 +158,14 @@ class RAGManager:
 
     # ── Document indexing ──────────────────────────
 
-    def _index_documents(self):
-        md_files = sorted(self.knowledge_dir.glob("*.md"))
+    def _knowledge_files(self) -> list[Path]:
+        return sorted(self.knowledge_dir.rglob("*.md"))
+
+    def _source_name(self, path: Path) -> str:
+        return path.relative_to(self.knowledge_dir).as_posix()
+
+    def _index_documents(self, md_files: list[Path] | None = None):
+        md_files = md_files if md_files is not None else self._knowledge_files()
         if not md_files:
             print("[RAG] ⚠️ 知识库目录为空，跳过索引")
             return
@@ -170,10 +176,17 @@ class RAGManager:
             if not chunks:
                 continue
 
-            ids = [f"{md_file.stem}:{i}" for i in range(len(chunks))]
+            source = self._source_name(md_file)
+            source_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", source)
+            ids = [f"{source_id}:{i}" for i in range(len(chunks))]
             documents = [c["content"] for c in chunks]
             metadatas = [
-                {"source": md_file.name, "title": c["title"], "char_count": len(c["content"])}
+                {
+                    "source": source,
+                    "document_type": "case" if source.startswith("cases/") else "reference",
+                    "title": c["title"],
+                    "char_count": len(c["content"]),
+                }
                 for c in chunks
             ]
 

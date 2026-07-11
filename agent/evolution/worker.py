@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import EvolutionConfig
+from .curator import LLMSkillCurator
 from .reviewer import DeterministicSkillReviewer
 from .store import EvolutionStore, get_evolution_store
 
@@ -27,11 +28,13 @@ class EvolutionWorker:
         store: EvolutionStore,
         config: EvolutionConfig | None = None,
         reviewer: DeterministicSkillReviewer | None = None,
+        curator: LLMSkillCurator | None = None,
         worker_id: str | None = None,
     ):
         self.store = store
         self.config = config or EvolutionConfig()
         self.reviewer = reviewer or DeterministicSkillReviewer(store)
+        self.curator = curator or LLMSkillCurator(store, self.config)
         self.worker_id = worker_id or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
     def run_once(self) -> WorkerResult | None:
@@ -46,6 +49,7 @@ class EvolutionWorker:
             if job["kind"] != "skill_review":
                 raise ValueError(f"unsupported evolution job kind: {job['kind']}")
             decision = self.reviewer.review(job)
+            decision = self.curator.curate(job, decision)
             review = self.store.save_review(
                 str(job["id"]),
                 status=decision.status,
@@ -86,4 +90,3 @@ def get_evolution_worker() -> EvolutionWorker:
             if _worker is None:
                 _worker = EvolutionWorker(get_evolution_store())
     return _worker
-

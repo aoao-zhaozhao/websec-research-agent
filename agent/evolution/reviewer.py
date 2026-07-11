@@ -53,6 +53,7 @@ class DeterministicSkillReviewer:
         tool_counts: dict[str, int] = {}
         errors = 0
         skill_mutation = False
+        case_mutation = False
         reflection_requested_skill = False
 
         for observation in observations:
@@ -63,6 +64,8 @@ class DeterministicSkillReviewer:
                 errors += 1
             if tool_name in {"skill_create", "skill_patch"} and result.get("status") == "ok":
                 skill_mutation = True
+            if tool_name == "case_create" and result.get("status") == "ok":
+                case_mutation = True
             if tool_name == "scan_reflect":
                 suggestions = (result.get("data") or {}).get("suggestions") or []
                 reflection_requested_skill = reflection_requested_skill or any(
@@ -88,8 +91,8 @@ class DeterministicSkillReviewer:
 
         covered = self._covered_agent_categories()
         uncovered = sorted({item["category"] for item in strong_findings} - covered)
-        action_required = bool(uncovered) and not skill_mutation
-        if reflection_requested_skill and not covered and not skill_mutation:
+        action_required = bool(uncovered) and not skill_mutation and not case_mutation
+        if reflection_requested_skill and not covered and not skill_mutation and not case_mutation:
             action_required = True
             uncovered = uncovered or ["general"]
 
@@ -102,21 +105,24 @@ class DeterministicSkillReviewer:
             "covered_agent_categories": sorted(covered),
             "uncovered_categories": uncovered,
             "skill_mutation_observed": skill_mutation,
+            "case_mutation_observed": case_mutation,
         }
         if action_required:
             titles = "; ".join(item["title"] for item in strong_findings[:8]) or "reusable scan technique"
             report = (
                 "A deterministic skill review found reusable evidence without an "
                 f"agent-created skill in these categories: {', '.join(uncovered)}. "
-                f"Evidence: {titles}. Before finishing the next scan, call skill_list, "
-                "inspect related skills with skill_view, then call skill_create or "
-                "skill_patch when the technique is reusable. If no reusable lesson "
-                "exists, call scan_reflect with no successful techniques and record "
-                "the reason in failed_attempts."
+                f"Evidence: {titles}. Before finishing the next scan, call case_create "
+                "to preserve the observed episode. Promote or patch a skill only after "
+                "independent cases prove the same technique is reusable."
             )
             return ReviewDecision("action_required", report, evidence)
 
-        reason = "a skill mutation was already recorded" if skill_mutation else "no uncovered reusable finding was found"
+        reason = (
+            "a skill or case mutation was already recorded"
+            if skill_mutation or case_mutation
+            else "no uncovered reusable finding was found"
+        )
         report = (
             f"Deterministic review completed: {reason}. "
             f"Reviewed {len(observations)} observations with {errors} tool errors."
@@ -137,4 +143,3 @@ class DeterministicSkillReviewer:
     def _normalize_category(category: str) -> str:
         normalized = category.strip().lower().replace("-", "_").replace(" ", "_")
         return CATEGORY_ALIASES.get(normalized, "general")
-

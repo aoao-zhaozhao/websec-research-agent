@@ -7,6 +7,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class EvolutionConfig:
     skills_root: Path = field(
@@ -42,4 +49,16 @@ class EvolutionConfig:
     )
     worker_poll_seconds: float = field(
         default_factory=lambda: float(os.getenv("EVOLUTION_WORKER_POLL_SECONDS", "2"))
+    )
+    llm_curation_enabled: bool = field(
+        default_factory=lambda: _env_bool("SKILL_LLM_CURATION_ENABLED", True)
+    )
+    llm_curation_min_skills: int = field(
+        default_factory=lambda: int(os.getenv("SKILL_LLM_CURATION_MIN_SKILLS", "2"))
+    )
+    llm_curation_min_confidence: float = field(
+        default_factory=lambda: float(os.getenv("SKILL_LLM_CURATION_MIN_CONFIDENCE", "0.92"))
+    )
+    llm_curation_max_skills: int = field(
+        default_factory=lambda: int(os.getenv("SKILL_LLM_CURATION_MAX_SKILLS", "12"))
     )

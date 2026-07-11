@@ -20,6 +20,7 @@ EVOLUTION_TOOLS = {
     "skill_pin",
     "skill_archive",
     "skill_restore",
+    "case_create",
     "scan_reflect",
 }
 
@@ -67,13 +68,13 @@ class EvolutionCoordinator:
         result = result or {}
         if result.get("status") != "ok":
             return False
-        if tool_name in {"skill_create", "skill_patch"}:
+        if tool_name in {"skill_create", "skill_patch", "case_create"}:
             return True
         if tool_name != "scan_reflect":
             return False
         suggestions = (result.get("data") or {}).get("suggestions") or []
         return not any(
-            isinstance(item, dict) and item.get("action") == "consider_skill_create"
+            isinstance(item, dict) and item.get("action") == "consider_case_create"
             for item in suggestions
         )
 

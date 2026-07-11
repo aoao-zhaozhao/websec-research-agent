@@ -1436,7 +1436,7 @@ function getToolCategoryIcon(cat) {
   const icons = {
     'HTTP 基础': '🌐', '攻击面测绘': '🔍', '注入验证': '💉',
     'SSRF 检测': '🔄', 'JWT 攻击': '🔑', '授权攻击': '🛡️',
-    'OOB 外带确认': '📡', '高级利用': '⚡', '自进化技能': '🧬',
+    'OOB 外带确认': '📡', '高级利用': '⚡', '自进化技能': '🧬', '已学习技能': '🧠',
   };
   return icons[cat] || '🔧';
 }
@@ -1447,16 +1447,38 @@ async function loadToolInventory() {
     const resp = await fetch('/api/tools');
     if (!resp.ok) throw new Error('API error');
     toolInventory = await resp.json();
+    toolInventory.skill_total = 0;
+
+    const skillsResp = await fetch('/api/skills');
+    if (skillsResp.ok) {
+      const skillsData = await skillsResp.json();
+      const skills = skillsData.skills || [];
+      toolInventory.skill_total = skills.length;
+      if (skills.length) {
+        toolInventory.categories.push({
+          category: '已学习技能',
+          tools: skills.map(skill => ({
+            name: skill.name,
+            description: `${skill.description} [${skill.category} | ${skill.state}]${skill.tags?.length ? ` #${skill.tags.join(' #')}` : ''}`,
+            params: [],
+          })),
+        });
+      }
+    }
   } catch (err) {
-    toolInventory = { total: 0, categories: [], version: '?' };
+    toolInventory = { total: 0, skill_total: 0, categories: [], version: '?' };
   }
   return toolInventory;
 }
 
 async function renderToolInventory(filter = '') {
   const data = await loadToolInventory();
-  toolsCount.textContent = `共 ${data.total} 个工具`;
-  toolsFooterCount.textContent = `v${data.version} · ${data.total} tools`;
+  const skillTotal = data.skill_total || 0;
+  const inventoryTotal = data.total + skillTotal;
+  toolsCount.textContent = skillTotal
+    ? `${data.total} 个工具 · ${skillTotal} 个已学习技能`
+    : `共 ${data.total} 个工具`;
+  toolsFooterCount.textContent = `v${data.version} · ${data.total} tools · ${skillTotal} skills`;
 
   const q = filter.trim().toLowerCase();
   let visibleTotal = 0;
@@ -1498,8 +1520,8 @@ async function renderToolInventory(filter = '') {
   }
 
   toolsCount.textContent = q
-    ? `匹配 ${visibleTotal} / ${data.total} 个工具`
-    : `共 ${data.total} 个工具`;
+    ? `匹配 ${visibleTotal} / ${inventoryTotal} 项`
+    : (skillTotal ? `${data.total} 个工具 · ${skillTotal} 个已学习技能` : `共 ${data.total} 个工具`);
 }
 
 async function openToolInventory() {

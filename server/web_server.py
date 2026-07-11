@@ -176,6 +176,15 @@ async def get_tools():
     return {"version": APP_VERSION, "total": len(BASE_TOOLS), "categories": result}
 
 
+@app.get("/api/skills")
+async def get_skills():
+    """Return learned skills for the workspace inventory."""
+    from agent.skill_manager import get_skill_manager
+
+    skills = get_skill_manager().list_all()
+    return {"total": len(skills), "skills": skills}
+
+
 def _categorize_tool(name: str, desc: str) -> str:
     """Assign a tool to a UI category."""
     lower = (name + " " + desc).lower()
@@ -197,7 +206,7 @@ def _categorize_tool(name: str, desc: str) -> str:
         return "OOB 外带确认"
     if any(kw in name for kw in ("css_exfil", "webhook_reconstruct")):
         return "高级利用"
-    if any(kw in name for kw in ("skill_", "scan_reflect")):
+    if any(kw in name for kw in ("skill_", "case_create", "scan_reflect")):
         return "自进化技能"
     return "其他"
 

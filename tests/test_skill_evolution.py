@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent.evolution import EvolutionConfig, EvolutionCoordinator, EvolutionStore, EvolutionWorker
+from agent.evolution.curator import LLMSkillCurator
 from agent.evolution.lifecycle import LifecyclePolicy
+from agent.evolution.reviewer import ReviewDecision
 from agent.skill_manager import SkillAlreadyExistsError, SkillManager
 
 
@@ -133,6 +137,44 @@ class SkillEvolutionTests(unittest.TestCase):
         self.assertFalse(self.manager.archive("test-technique"))
         self.assertTrue(self.store.remove_reference("cron", "daily-scan", "test-technique"))
         self.assertTrue(self.manager.archive("test-technique"))
+
+    def test_llm_curator_merges_only_high_confidence_agent_skills(self):
+        self.create_skill("first-technique")
+        self.create_skill("second-technique")
+        proposal = {
+            "actions": [
+                {
+                    "action": "merge",
+                    "canonical": "first-technique",
+                    "absorbed": ["second-technique"],
+                    "confidence": 0.97,
+                    "description": "One consolidated technique",
+                    "tags": ["merged", "test"],
+                    "merged_body": "## Steps\n\nUse the consolidated procedure.",
+                    "reason": "The two test skills duplicate the same procedure.",
+                }
+            ]
+        }
+
+        curator = LLMSkillCurator(
+            self.store,
+            EvolutionConfig(
+                skills_root=self.root / "skills",
+                db_path=self.root / "evolution.db",
+                llm_curation_enabled=True,
+            ),
+            manager=self.manager,
+            client=SimpleNamespace(invoke=lambda _messages: SimpleNamespace(content=json.dumps(proposal))),
+        )
+        result = curator.curate(
+            {"id": "review-job"},
+            ReviewDecision("no_action", "reviewed", {"skill_mutation_observed": True}),
+        )
+
+        self.assertEqual(result.evidence["llm_curation"]["status"], "merged")
+        self.assertIn("consolidated procedure", self.manager.view("first-technique"))
+        self.assertEqual(self.store.get_skill("second-technique")["state"], "archived")
+        self.assertTrue(self.manager.restore("second-technique"))
 
     def _write_legacy_skill(self, name: str, created: datetime, source: str) -> None:
         path = self.root / "skills" / "general" / name / "SKILL.md"

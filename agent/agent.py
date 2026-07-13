@@ -14,16 +14,18 @@ from .evolution import EvolutionConfig, EvolutionCoordinator
 from .prompts import SYSTEM_PROMPT
 from .rag import create_search_knowledge_tool
 from .scan_state import ScanState, target_from_input
+from .telemetry import TelemetryStore
 from .tools import BASE_TOOLS
-from .tools.results import parse_tool_result
+from .tools.results import parse_tool_result, tool_result_protocol_error
 
 
 class Agent:
     """Web application security scanning agent."""
 
-    def __init__(self, config: AgentConfig | None = None):
+    def __init__(self, config: AgentConfig | None = None, telemetry: TelemetryStore | None = None):
         self.config = config or AgentConfig()
         self.llm = self._build_llm()
+        self.telemetry = telemetry or TelemetryStore(Path(self.config.telemetry_db_path))
 
         self._search_knowledge_tool = None
         self._rag_manager = None
@@ -106,7 +108,12 @@ class Agent:
     def finish_scan(self, status: str) -> list[dict[str, Any]]:
         """Return terminal lifecycle events for the current or latest scan."""
         scan = self._active_scan or self.last_scan
-        return scan.finish(status) if scan else []
+        if scan is None:
+            return []
+        events = scan.finish(status)
+        if events and getattr(self, "telemetry", None) is not None:
+            self.telemetry.finish_run(scan.scan_id, status)
+        return events
 
     def _summarize_tool_output(self, output: Any, limit: int = 900) -> str:
         if hasattr(output, "content"):
@@ -129,7 +136,59 @@ class Agent:
             print(f"[Agent] evolution finalizer failed: {exc}")
             return {"error": str(exc)}
 
-    async def run_events(self, user_input: str) -> AsyncIterator[dict[str, Any]]:
+    @staticmethod
+    def _effective_result(result: dict[str, Any] | None) -> bool | None:
+        """A v1.7 proxy until task-specific success predicates are introduced."""
+        if result is None:
+            return None
+        if result.get("status") != "ok":
+            return False
+        return bool(
+            result.get("findings")
+            or result.get("data")
+            or result.get("request")
+            or result.get("response")
+        )
+
+    def _record_model_usage(self, scan_id: str, output: Any) -> None:
+        """Persist provider usage when LangChain exposes it on a model result."""
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is None:
+            return
+        usage = getattr(output, "usage_metadata", None)
+        response_metadata = getattr(output, "response_metadata", {}) or {}
+        if not isinstance(usage, dict):
+            usage = response_metadata.get("token_usage") or response_metadata.get("usage")
+        if not isinstance(usage, dict):
+            return
+        input_tokens = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
+        output_tokens = int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
+        details = usage.get("input_token_details") or usage.get("prompt_tokens_details") or {}
+        cached_tokens = int(
+            usage.get("cached_tokens", details.get("cached_tokens", 0)) or 0
+        )
+        input_rate = self.config.input_cost_per_million_tokens
+        output_rate = self.config.output_cost_per_million_tokens
+        cost_usd = None
+        if input_rate is not None and output_rate is not None:
+            cost_usd = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
+        telemetry.record_model_usage(
+            scan_id,
+            model=self.config.model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+            cost_usd=cost_usd,
+            raw_usage=usage,
+        )
+
+    async def run_events(
+        self,
+        user_input: str,
+        *,
+        mode: str = "production",
+        category: str = "web",
+    ) -> AsyncIterator[dict[str, Any]]:
         """
         Execute one turn and yield structured events.
 
@@ -140,6 +199,16 @@ class Agent:
         scan = ScanState(target=target_from_input(user_input))
         self._active_scan = scan
         self.last_scan = scan
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            telemetry.create_run(
+                scan.scan_id,
+                input_text=user_input,
+                target=scan.target,
+                mode=mode,
+                category=category,
+                model=self.config.model,
+            )
         self.messages.append(HumanMessage(content=user_input))
         self._trim_history()
         invocation_messages = list(self.messages)
@@ -172,11 +241,20 @@ class Agent:
                     if chunk.content:
                         full_response.append(chunk.content)
                         yield {"type": "token", "scan_id": scan.scan_id, "content": chunk.content}
+                elif kind == "on_chat_model_end":
+                    self._record_model_usage(scan.scan_id, event.get("data", {}).get("output"))
                 elif kind == "on_tool_start":
                     tool_name = event.get("name", "tool")
                     run_id = str(event.get("run_id", ""))
                     for lifecycle_event in scan.start_tool(tool_name, run_id):
                         yield lifecycle_event
+                    if telemetry is not None:
+                        telemetry.start_action(
+                            scan.scan_id,
+                            tool_run_id=run_id,
+                            tool_name=tool_name,
+                            input_data=event.get("data", {}).get("input"),
+                        )
                     yield {
                         "type": "tool_started",
                         "scan_id": scan.scan_id,
@@ -188,7 +266,24 @@ class Agent:
                 elif kind == "on_tool_end":
                     tool_name = event.get("name", "tool")
                     run_id = str(event.get("run_id", ""))
-                    output, result = parse_tool_result(event.get("data", {}).get("output"))
+                    raw_output = event.get("data", {}).get("output")
+                    output, result = parse_tool_result(raw_output)
+                    protocol_error = tool_result_protocol_error(raw_output)
+                    action_status = "protocol_error" if protocol_error else str(result.get("status", "ok"))
+                    result_for_scan = result or {"status": "protocol_error"}
+                    progress_event = scan.finish_tool(tool_name, run_id, result_for_scan)
+                    if telemetry is not None:
+                        telemetry.finish_action(
+                            scan.scan_id,
+                            tool_run_id=run_id,
+                            tool_name=tool_name,
+                            status=action_status,
+                            output_excerpt=self._summarize_tool_output(output, limit=6000),
+                            result_data=result,
+                            duration_ms=progress_event.get("duration_ms"),
+                            protocol_error=protocol_error,
+                            effective=self._effective_result(result),
+                        )
                     yield {
                         "type": "tool_finished",
                         "scan_id": scan.scan_id,
@@ -197,12 +292,13 @@ class Agent:
                         "name": tool_name,
                         "output": self._summarize_tool_output(output),
                         "result": result,
+                        "protocol_error": protocol_error,
                     }
-                    yield scan.finish_tool(tool_name, run_id, result)
+                    yield progress_event
                     for finding_event in scan.finding_events(tool_name, result):
                         yield finding_event
                     coordinator = getattr(self, "evolution", None)
-                    if coordinator is not None:
+                    if coordinator is not None and result is not None:
                         coordinator.record_tool_completed(
                             tool_name,
                             result,
@@ -225,6 +321,8 @@ class Agent:
                 }
             for lifecycle_event in scan.finish("completed"):
                 yield lifecycle_event
+            if telemetry is not None:
+                telemetry.finish_run(scan.scan_id, "completed", response_text)
         except Exception:
             response_text = "".join(full_response).strip()
             if response_text:
@@ -240,6 +338,8 @@ class Agent:
                 }
             for lifecycle_event in scan.finish("failed"):
                 yield lifecycle_event
+            if telemetry is not None:
+                telemetry.finish_run(scan.scan_id, "failed", response_text)
             raise
         finally:
             if not evolution_finalized:

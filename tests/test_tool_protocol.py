@@ -6,7 +6,7 @@ from unittest.mock import patch
 import requests
 
 from agent.tools import BASE_TOOLS
-from agent.tools.results import parse_tool_result
+from agent.tools.results import parse_tool_result, tool_result_protocol_error
 
 
 class FakeResponse:
@@ -29,6 +29,9 @@ def invoke(name: str, arguments: dict) -> tuple[str, dict | None]:
 
 
 class ToolProtocolTests(unittest.TestCase):
+    def test_missing_result_envelope_is_a_protocol_failure(self):
+        self.assertEqual(tool_result_protocol_error("unstructured text"), "missing_result_envelope")
+
     def test_headers_returns_findings_in_a_uniform_envelope(self):
         with patch("agent.tools.analysis_tools.get", return_value=FakeResponse()):
             text, result = invoke("analyze_headers", {"url": "http://scanner.test"})

@@ -1,12 +1,15 @@
 # WebSec Research Agent — Web 漏洞审查引擎
 
-基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。覆盖 **SQLi / XSS / 命令注入 / SSTI / LFI / SSRF / JWT 攻击 / IDOR / 提权 / OOB 外带确认** 共 10 大攻击类别，39 个注册工具，80+ 内置 payload。通过 FastAPI + WebSocket 提供可观察的扫描阶段、实时工具轨迹和漏洞证据工作台。v1.6 引入“案例优先、技能晋升制”：已解决任务先保存为可检索的 RAG 案例，只有多个独立案例重复验证的模式才会晋升为 Skill。
+基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。覆盖 **SQLi / XSS / 命令注入 / SSTI / LFI / SSRF / JWT 攻击 / IDOR / 提权 / OOB 外带确认** 共 10 大攻击类别，39 个注册工具，80+ 内置 payload。通过 FastAPI + WebSocket 提供可观察的扫描阶段、实时工具轨迹、漏洞证据和运行指标工作台。v1.6 引入“案例优先、技能晋升制”；v1.7 增加可持久化、可复算的运行遥测。
 
 > **v1.4** 从 [Shannon OSS](https://github.com/keygraph/shannon)（AI 白盒渗透测试引擎）迁移了 SSRF、命令注入、SSTI、JWT 攻击、授权攻击和 OOB 盲确认等攻击模式。所有工具为 Python 原创实现，设计思路源自 Shannon 的提示词架构。
 >
 > **v1.5** 新增代码驱动的技能遥测、确定性生命周期、durable review job、lease/retry worker 和持久化维护指令，形成最小完整自进化闭环。
 >
 > **v1.6** 新增案例记忆库、递归增量 RAG 索引和 `case_create`；DeepSeek curator 审查 agent-created Skill 的语义重复性；Skill 创建需要至少两条同类案例支持，避免“一题一 Skill”的知识库膨胀。
+> **v1.7** 新增独立运行遥测账本：每次扫描记录工具行动、协议失败、模型 token 用量、成本和本地评测结果；工作台新增“运行指标”视图，`/api/metrics` 与 `/api/runs` 提供可复算的运行数据。
+>
+> **v1.7.2（规划）** 将增加完整 HTTP 响应和渲染 DOM 的受限关键词/正则检索。它用于定位大页面深处的已知线索，不会把完整响应直接塞入模型上下文。
 
 ## 项目结构
 
@@ -26,6 +29,7 @@ my-agent/
 │   ├── skill_manager.py        # 技能生命周期管理 ← v1.3
 │   ├── evolution/              # 遥测、生命周期、DeepSeek curator、Nudge Job
 │   ├── session_db.py           # SQLite 持久化 (FTS5) ← v1.3
+│   ├── telemetry.py            # 运行、行动、模型 usage 与评测账本 ← v1.7
 │   ├── tools/                  # 扫描工具集（38 个工具）
 │   │   ├── http_tools.py       #   http_get / http_post / http_request
 │   │   ├── analysis_tools.py   #   analyze_headers / extract_forms / extract_links
@@ -60,9 +64,9 @@ my-agent/
 │   │   └── css_injection/      #   种子技能: css-exfil-otp
 │   └── models/                 # 本地模型 (.gitignore 排除)
 ├── server/
-│   └── web_server.py           # FastAPI 服务器 (WebSocket + REST + /api/tools)
+│   └── web_server.py           # FastAPI 服务器 (WebSocket + REST + 指标 API)
 ├── web/
-│   └── index.html              # 浏览器工作台 (含 📦 工具目录面板)
+│   └── index.html              # 浏览器工作台 (工具目录、运行指标与历史运行)
 └── test_client.py              # 命令行交互客户端（可选）
 ```
 
@@ -83,6 +87,10 @@ AGENT_MAX_TURNS=120
 AGENT_HISTORY_MESSAGES=24
 SKILL_LLM_CURATION_ENABLED=true
 SKILL_LLM_CURATION_MIN_CONFIDENCE=0.92
+TELEMETRY_DB_PATH=data/telemetry.db
+# 可选：配置后 /api/metrics 才计算成本（单位：USD / 1M tokens）
+MODEL_INPUT_COST_PER_MILLION=
+MODEL_OUTPUT_COST_PER_MILLION=
 ```
 
 `deepseek-v4-flash` 用于默认扫描；在"模型与思考"设置中可切换到 `deepseek-v4-pro`。思考模式显式传递 `thinking.enabled` 和 `reasoning_effort`（`high` / `max`），运行时不会传递与思考模式不兼容的 `temperature`。模型、思考开关和强度会在下一次扫描生效。
@@ -148,7 +156,7 @@ python -c "import torch; print(torch.__version__); print(torch.cuda.is_available
 python server/web_server.py
 ```
 
-浏览器打开 **http://127.0.0.1:9120**，在输入框输入目标 URL 即可开始扫描。
+浏览器打开 **http://127.0.0.1:9120** 进入工作台；再输入已授权的靶场或 Web 应用 URL 开始扫描。
 
 ### 5. 扫描能力
 
@@ -177,6 +185,9 @@ Agent 覆盖 10 大攻击类别，38 个工具自动协作：
 | `/api/tools` | GET | 工具目录——返回 39 个工具按类别分组，含名称、描述、参数 Schema |
 | `/api/skills` | GET | 返回已学习 Skill 的生命周期状态、标签和使用遥测，供工具目录动态展示 |
 | `/api/evolution` | GET | 查看工具计数、review job、待处理指令和近期审查报告 |
+| `/api/metrics` | GET | 查看运行数、工具/协议失败率、首次有效行动比例、solve rate 与 token 用量 |
+| `/api/runs` | GET | 查看持久化运行记录；`/api/runs/{id}` 查看行动、usage 与评测详情 |
+| `/api/runs/{id}/evaluation` | POST | 写入本地 benchmark 或人工判定的评测结果 |
 | `/api/sessions` | GET | 活跃连接数 |
 | `/api/health` | GET | 健康检查 |
 
@@ -357,7 +368,7 @@ Agent 覆盖 10 大攻击类别，38 个工具自动协作：
 - **设计来源**: Shannon OSS（AI 白盒渗透测试引擎）的攻击模式，100% Python 原创实现
 - **工具总数**: 34
 
-### v1.5.0 — 稳定自进化闭环 ⭐ 当前
+### v1.5.0 — 稳定自进化闭环
 - SQLite 技能遥测：独立记录 use / view / patch 次数与时间
 - 代码级 Nudge：每 10 次业务工具调用创建 durable `skill_review` job
 - Worker 支持 claim、lease、retry、超时恢复和 dead-letter
@@ -365,9 +376,16 @@ Agent 覆盖 10 大攻击类别，38 个工具自动协作：
 - `active → stale → archived` 确定性生命周期、Pin、引用保护、软归档和恢复
 - 新增 `/api/evolution` 状态接口，基础工具总数提升至 38
 
-### v1.6.0 — 案例优先的 DeepSeek 记忆治理（当前）
+### v1.6.0 — 案例优先的 DeepSeek 记忆治理
 - 新增 `case_create` 与 `agent/knowledge/cases/`：已解决任务先沉淀为结构化案例，再通过 RAG 按技术栈、参数和证据特征检索
 - RAG 改为递归、增量索引，检索结果标记 `reference` 或 `case` 来源
 - DeepSeek curator 仅合并高置信重复 Skill；归档记录可恢复并保留审计证据
 - `skill_create` 强制要求至少两条同分类且标签重叠的独立案例，阻止单题经验污染 Skill 库
 - 新增 `/api/skills`，工具目录动态展示已学习 Skill；基础工具总数为 39
+
+### v1.7.0 — 运行遥测与指标工作台（当前）
+- 新增 `telemetry.db`：持久化运行、工具行动、模型 usage 和评测结果；旧的演进遥测不再用于计算运行指标
+- 工具包装器直接执行底层函数，避免同名嵌套工具调用造成重复终态观测
+- 无效或缺失的 `ToolResult` envelope 标记为协议失败，与工具执行失败分开统计
+- 新增 `/api/metrics`、`/api/runs` 和评测写入接口；前端可查看总体指标、能力域、历史运行和行动详情
+- 模型供应商返回 usage 时记录输入/输出 token；配置价格后可计算成本

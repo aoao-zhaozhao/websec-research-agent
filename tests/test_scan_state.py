@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from agent.agent import Agent
 from agent.scan_state import ScanState, stage_for_tool, target_from_input
+from agent.telemetry import TelemetryStore
 from agent.tools.results import Evidence, Finding, ToolResult
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -86,13 +87,15 @@ class _FakeGraph:
 class AgentLifecycleEventTests(unittest.IsolatedAsyncioTestCase):
     async def test_agent_emits_stage_progress_finding_and_finished_events(self):
         agent = Agent.__new__(Agent)
-        agent.config = SimpleNamespace(max_turns=4, history_message_limit=24, show_reasoning=True)
+        agent.config = SimpleNamespace(max_turns=4, history_message_limit=24, show_reasoning=True, model="test-model")
         agent.llm = object()
         agent.messages = [SystemMessage(content="system")]
         agent._active_scan = None
         agent.last_scan = None
         agent._tools = lambda: []
         agent._build_llm = lambda: object()
+        agent.telemetry = TelemetryStore(":memory:")
+        self.addCleanup(agent.telemetry.close)
         agent.evolution = Mock()
         agent.evolution.finalize_turn.return_value.to_dict.return_value = {
             "tool_calls_since_review": 1,
@@ -105,6 +108,11 @@ class AgentLifecycleEventTests(unittest.IsolatedAsyncioTestCase):
         graph = _FakeGraph()
         with patch("agent.agent.create_react_agent", return_value=graph):
             events = [event async for event in agent.run_events("scan http://scanner.test")]
+
+        telemetry_run = agent.telemetry.get_run(events[0]["scan_id"])
+        self.assertEqual(telemetry_run["status"], "completed")
+        self.assertEqual(len(telemetry_run["actions"]), 1)
+        self.assertEqual(telemetry_run["actions"][0]["tool_name"], "crawl")
 
         event_types = [event["type"] for event in events]
         self.assertEqual(event_types[0], "scan_started")

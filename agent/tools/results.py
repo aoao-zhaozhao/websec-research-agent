@@ -213,3 +213,19 @@ def parse_tool_result(output: Any) -> tuple[str, dict[str, Any] | None]:
         return text, None
     readable = (text[:match.start()] + text[match.end():]).strip()
     return readable, result if isinstance(result, dict) else None
+
+
+def tool_result_protocol_error(output: Any) -> str | None:
+    """Classify missing or malformed result envelopes for runtime telemetry."""
+    text = str(getattr(output, "content", output)).strip()
+    if RESULT_OPEN not in text:
+        return "missing_result_envelope"
+    if RESULT_CLOSE not in text:
+        return "unterminated_result_envelope"
+    _readable, result = parse_tool_result(output)
+    if result is None:
+        return "invalid_result_envelope"
+    required = {"tool", "status", "summary", "findings", "errors"}
+    if not required.issubset(result):
+        return "incomplete_result_envelope"
+    return None

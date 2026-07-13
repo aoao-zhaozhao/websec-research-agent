@@ -15,6 +15,13 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_optional_float(name: str) -> float | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    return float(value)
+
+
 @dataclass
 class AgentConfig:
     """Web 漏洞审查 Agent 配置"""
@@ -58,6 +65,20 @@ class AgentConfig:
             "EVOLUTION_DB_PATH",
             os.path.join(os.path.dirname(__file__), "..", "data", "evolution.db"),
         )
+    )
+
+    # Runtime telemetry (v1.7)
+    telemetry_db_path: str = field(
+        default_factory=lambda: os.getenv(
+            "TELEMETRY_DB_PATH",
+            os.path.join(os.path.dirname(__file__), "..", "data", "telemetry.db"),
+        )
+    )
+    input_cost_per_million_tokens: float | None = field(
+        default_factory=lambda: _env_optional_float("MODEL_INPUT_COST_PER_MILLION")
+    )
+    output_cost_per_million_tokens: float | None = field(
+        default_factory=lambda: _env_optional_float("MODEL_OUTPUT_COST_PER_MILLION")
     )
 
     # ── RAG 知识库 ──

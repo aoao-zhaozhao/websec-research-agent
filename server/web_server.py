@@ -1,4 +1,4 @@
-"""FastAPI server for WebSec Research Agent v1.5."""
+"""FastAPI server for WebSec Research Agent v1.7."""
 
 from __future__ import annotations
 
@@ -19,10 +19,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from agent import Agent, AgentConfig
+from agent.telemetry import TelemetryStore
 
 load_dotenv(PROJECT_ROOT / ".env")
 
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.7.0"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -57,6 +58,7 @@ app.add_middleware(
 )
 
 agent_config = AgentConfig()
+telemetry_store = TelemetryStore(Path(agent_config.telemetry_db_path))
 active_sessions: int = 0
 
 
@@ -124,6 +126,43 @@ async def update_config(data: dict):
 @app.get("/api/sessions")
 async def get_sessions():
     return {"active_sessions": active_sessions}
+
+
+@app.get("/api/metrics")
+async def get_metrics(category: str | None = None, mode: str | None = None):
+    """Return durable v1.7 runtime metrics for production and benchmark runs."""
+    return telemetry_store.metrics(category=category, mode=mode)
+
+
+@app.get("/api/runs")
+async def get_runs(limit: int = 50):
+    return {"runs": telemetry_store.list_runs(limit=limit)}
+
+
+@app.get("/api/runs/{run_id}")
+async def get_run(run_id: str):
+    run = telemetry_store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return run
+
+
+@app.post("/api/runs/{run_id}/evaluation")
+async def record_evaluation(run_id: str, data: dict):
+    if telemetry_store.get_run(run_id) is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        evaluation = telemetry_store.record_evaluation(
+            run_id,
+            judge=str(data.get("judge", "manual")),
+            outcome=str(data.get("outcome", "inconclusive")),
+            verified=bool(data.get("verified", False)),
+            candidate_fingerprint=str(data.get("candidate_fingerprint", "")),
+            reason=str(data.get("reason", "")),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"status": "ok", "evaluation": evaluation}
 
 
 @app.get("/api/tools")
@@ -216,7 +255,7 @@ async def chat(ws: WebSocket):
     global active_sessions
 
     await ws.accept()
-    agent = Agent(agent_config)
+    agent = Agent(agent_config, telemetry=telemetry_store)
     scan_task: asyncio.Task | None = None
     send_lock = asyncio.Lock()
     active_sessions += 1
@@ -226,9 +265,9 @@ async def chat(ws: WebSocket):
         async with send_lock:
             await ws.send_json(payload)
 
-    async def run_scan(user_input: str) -> None:
+    async def run_scan(user_input: str, mode: str, category: str) -> None:
         try:
-            async for event in agent.run_events(user_input):
+            async for event in agent.run_events(user_input, mode=mode, category=category):
                 if event.get("type") in {"tool_started", "tool_finished"}:
                     event["input"] = _json_safe(event.get("input"))
                     event["output"] = _json_safe(event.get("output"))
@@ -274,12 +313,17 @@ async def chat(ws: WebSocket):
             user_input = str(msg.get("content", "")).strip()
             if not user_input:
                 continue
+            mode = str(msg.get("mode", "production")).strip().lower()
+            if mode not in {"production", "benchmark"}:
+                await send_json({"type": "error", "content": "mode must be production or benchmark"})
+                continue
+            category = str(msg.get("category", "web")).strip().lower()[:80] or "web"
 
             if scan_task and not scan_task.done():
                 await send_json({"type": "error", "content": "已有扫描正在运行，请先停止当前扫描"})
                 continue
 
-            scan_task = asyncio.create_task(run_scan(user_input))
+            scan_task = asyncio.create_task(run_scan(user_input, mode, category))
 
     except WebSocketDisconnect:
         print(f"[WS] session closed (active: {active_sessions - 1})")

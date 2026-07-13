@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Web Security Scanner v1.5</title>
+<title>Web Security Scanner v1.7</title>
 <style>
   :root {
     --bg: #111311;
@@ -157,6 +157,7 @@
     font-size: 13px;
     white-space: nowrap;
   }
+  .mobile-only { display: none; }
   .dot {
     width: 9px;
     height: 9px;
@@ -457,6 +458,65 @@
     display: flex;
     justify-content: space-between;
   }
+  .metrics-panel {
+    width: min(1040px, calc(100vw - 48px));
+    max-height: calc(100vh - 48px);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, .5);
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+  }
+  .metrics-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .metrics-header h2 { margin: 0; font-size: 16px; }
+  .metrics-header-actions { display: flex; gap: 8px; }
+  .metrics-body { min-height: 0; overflow-y: auto; padding: 18px; }
+  .metrics-section + .metrics-section { margin-top: 22px; }
+  .metrics-section h3 { margin: 0 0 9px; color: var(--soft); font-size: 13px; }
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border: 1px solid var(--line);
+    background: #121512;
+  }
+  .metric-item { min-width: 0; padding: 11px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .metric-item:nth-child(3n) { border-right: 0; }
+  .metric-value { color: var(--text); font-size: 20px; font-weight: 700; line-height: 1.15; overflow-wrap: anywhere; }
+  .metric-label { margin-top: 5px; color: var(--soft); font-size: 12px; }
+  .metric-note { margin-top: 3px; color: var(--muted); font-size: 11px; }
+  .metrics-table-wrap { overflow-x: auto; }
+  .metrics-table { width: 100%; min-width: 600px; border-collapse: collapse; font-size: 12px; }
+  .metrics-table th, .metrics-table td { border-bottom: 1px solid var(--line); padding: 8px; text-align: left; }
+  .metrics-table th { color: var(--muted); font-weight: 500; }
+  .run-list { border-top: 1px solid var(--line); }
+  .run-row {
+    width: 100%; min-height: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+    background: transparent; padding: 10px 0; display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px; text-align: left;
+  }
+  .run-row > span:first-child { min-width: 0; }
+  .run-row:hover, .run-row.active { background: #20241f; }
+  .run-title { display: block; color: var(--soft); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-meta { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+  .run-status { align-self: center; color: var(--soft); font-size: 11px; text-transform: uppercase; white-space: nowrap; }
+  .run-status.failed { color: var(--red); }
+  .run-status.completed { color: var(--green); }
+  .metrics-detail { border-top: 1px solid var(--line); padding-top: 12px; }
+  .metrics-detail-head { display: flex; justify-content: space-between; gap: 12px; color: var(--soft); font-size: 13px; }
+  .action-row { border-bottom: 1px solid var(--line); padding: 9px 0; }
+  .action-row-head { display: flex; justify-content: space-between; gap: 10px; font: 12px "JetBrains Mono", "Cascadia Code", Consolas, monospace; }
+  .action-row-meta { margin-top: 4px; color: var(--muted); font-size: 11px; }
+  .action-row details { margin-top: 6px; }
+  .action-row .tool-body { max-height: 150px; }
   .tool-card {
     border: 1px solid var(--line);
     background: var(--panel);
@@ -568,11 +628,16 @@
     .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; overflow-y: auto; }
     .rail { border-left: 0; border-top: 1px solid var(--line); max-height: 44vh; }
     .topbar { align-items: flex-start; flex-direction: column; }
+    .mobile-only { display: grid; }
   }
   @media (max-width: 620px) {
     .conversation { padding: 12px; }
     .bubble { max-width: 100%; }
     .steps { width: 100%; }
+    .metrics-panel { width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
+    .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .metric-item:nth-child(3n) { border-right: 1px solid var(--line); }
+    .metric-item:nth-child(2n) { border-right: 0; }
   }
 </style>
 </head>
@@ -582,9 +647,10 @@
     <div class="brand">
       <div>
         <h1>Web Security Scanner</h1>
-        <div class="version">v1.5</div>
+        <div class="version">v1.7</div>
       </div>
-      <div class="brand-actions">
+        <div class="brand-actions">
+          <button class="icon-btn" id="metricsBtn" title="运行指标与历史">&#128202;</button>
         <button class="icon-btn" id="toolsBtn" title="工具目录 (38)">📦</button>
         <button class="icon-btn" id="settingsBtn" title="模型与思考设置">⚙</button>
         <button class="icon-btn" id="newSessionBtn" title="新建会话">+</button>
@@ -611,6 +677,7 @@
         <span class="dot" id="statusDot"></span>
         <span id="statusText">未连接</span>
         <span id="scanElapsed"></span>
+        <button class="icon-btn mobile-only" id="metricsMobileBtn" title="运行指标与历史">&#128202;</button>
       </div>
     </header>
 
@@ -643,6 +710,36 @@
       </div>
     </footer>
   </main>
+</div>
+
+<div class="tools-overlay" id="metricsOverlay">
+  <div class="metrics-panel" role="dialog" aria-modal="true" aria-labelledby="metricsTitle">
+    <div class="metrics-header">
+      <h2 id="metricsTitle">运行指标</h2>
+      <div class="metrics-header-actions">
+        <button class="icon-btn" id="refreshMetricsBtn" title="刷新运行指标">&#8635;</button>
+        <button class="icon-btn" id="closeMetricsBtn" title="关闭">&#215;</button>
+      </div>
+    </div>
+    <div class="metrics-body">
+      <section class="metrics-section">
+        <h3>总体</h3>
+        <div class="metrics-grid" id="metricsSummary"></div>
+      </section>
+      <section class="metrics-section">
+        <h3>能力域</h3>
+        <div id="metricsCategories" class="empty">尚无已记录运行。</div>
+      </section>
+      <section class="metrics-section">
+        <h3>历史运行</h3>
+        <div id="runList" class="empty">尚无已记录运行。</div>
+      </section>
+      <section class="metrics-section">
+        <h3>运行详情</h3>
+        <div id="runDetail" class="empty">选择一条运行以查看工具行动和模型用量。</div>
+      </section>
+    </div>
+  </div>
 </div>
 
 <div class="tools-overlay" id="toolsOverlay">
@@ -762,6 +859,16 @@ const toolsFooterCount = document.getElementById('toolsFooterCount');
 const toolsSearch = document.getElementById('toolsSearch');
 const toolsBtn = document.getElementById('toolsBtn');
 const closeToolsBtn = document.getElementById('closeToolsBtn');
+const metricsBtn = document.getElementById('metricsBtn');
+const metricsMobileBtn = document.getElementById('metricsMobileBtn');
+const metricsOverlay = document.getElementById('metricsOverlay');
+const closeMetricsBtn = document.getElementById('closeMetricsBtn');
+const refreshMetricsBtn = document.getElementById('refreshMetricsBtn');
+const metricsSummary = document.getElementById('metricsSummary');
+const metricsCategories = document.getElementById('metricsCategories');
+const runList = document.getElementById('runList');
+const runDetail = document.getElementById('runDetail');
+let selectedRunId = null;
 
 if (!activeId) {
   activeId = createSession().id;
@@ -1118,6 +1225,147 @@ function formatDuration(milliseconds) {
   return minutes ? `${minutes}m ${String(seconds % 60).padStart(2, '0')}s` : `${seconds}s`;
 }
 
+function formatRate(value) {
+  return typeof value === 'number' ? `${(value * 100).toFixed(1)}%` : '--';
+}
+
+function formatTokens(value) {
+  return new Intl.NumberFormat('zh-CN').format(Number(value || 0));
+}
+
+function formatCost(value) {
+  return typeof value === 'number' ? `$${value.toFixed(4)}` : '--';
+}
+
+function formatRunTime(value) {
+  if (!value) return '--';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function metricItem(value, label, note = '') {
+  return `<div class="metric-item"><div class="metric-value">${escapeHtml(value)}</div><div class="metric-label">${escapeHtml(label)}</div>${note ? `<div class="metric-note">${escapeHtml(note)}</div>` : ''}</div>`;
+}
+
+function renderMetrics(data) {
+  const runs = data?.runs || {};
+  const actions = data?.actions || {};
+  const first = data?.first_effective_action || {};
+  const solve = data?.solve_rate || {};
+  const usage = data?.model_usage || {};
+  metricsSummary.innerHTML = [
+    metricItem(`${runs.completed || 0} / ${runs.total || 0}`, '已完成运行'),
+    metricItem(formatRate(actions.tool_failure_rate), '工具失败率', `${actions.tool_errors || 0} / ${actions.total || 0}`),
+    metricItem(formatRate(actions.protocol_failure_rate), '协议失败率', `${actions.protocol_failures || 0} / ${actions.total || 0}`),
+    metricItem(formatRate(first.rate), '首次有效行动', `${first.effective || 0} / ${first.attempts || 0}`),
+    metricItem(formatRate(solve.rate), '已验证 solve', `${solve.solved || 0} / ${solve.evaluated || 0}`),
+    metricItem(formatTokens(usage.input_tokens) + ' / ' + formatTokens(usage.output_tokens), '输入 / 输出 token', `成本 ${formatCost(usage.cost_usd)}`)
+  ].join('');
+
+  const categories = Object.entries(data?.by_category || {});
+  if (!categories.length) {
+    metricsCategories.className = 'empty';
+    metricsCategories.textContent = '尚无已记录运行。';
+    return;
+  }
+  metricsCategories.className = 'metrics-table-wrap';
+  metricsCategories.innerHTML = `<table class="metrics-table"><thead><tr><th>能力域</th><th>运行</th><th>工具失败</th><th>首次有效</th><th>solve</th><th>Token</th></tr></thead><tbody>${categories.map(([name, item]) => {
+    const categoryRuns = item.runs || {};
+    const categoryActions = item.actions || {};
+    const categoryFirst = item.first_effective_action || {};
+    const categorySolve = item.solve_rate || {};
+    const categoryUsage = item.model_usage || {};
+    return `<tr><td>${escapeHtml(name)}</td><td>${categoryRuns.completed || 0}/${categoryRuns.total || 0}</td><td>${formatRate(categoryActions.tool_failure_rate)}</td><td>${formatRate(categoryFirst.rate)}</td><td>${formatRate(categorySolve.rate)}</td><td>${formatTokens(categoryUsage.input_tokens + categoryUsage.output_tokens)}</td></tr>`;
+  }).join('')}</tbody></table>`;
+}
+
+function renderRuns(runs) {
+  if (!Array.isArray(runs) || !runs.length) {
+    runList.className = 'empty';
+    runList.textContent = '尚无已记录运行。';
+    return;
+  }
+  runList.className = 'run-list';
+  runList.innerHTML = runs.map(run => `
+    <button class="run-row ${run.id === selectedRunId ? 'active' : ''}" data-run-id="${escapeHtml(run.id)}" type="button">
+      <span><span class="run-title">${escapeHtml(run.target || run.input_text || run.id)}</span><span class="run-meta">${escapeHtml(run.category || 'web')} · ${escapeHtml(run.mode || 'production')} · ${escapeHtml(formatRunTime(run.started_at))}</span></span>
+      <span class="run-status ${escapeHtml(run.status || '')}">${escapeHtml(run.status || 'unknown')}</span>
+    </button>
+  `).join('');
+  runList.querySelectorAll('[data-run-id]').forEach(button => {
+    button.onclick = () => loadRunDetail(button.dataset.runId);
+  });
+}
+
+function renderRunDetail(run) {
+  const actions = Array.isArray(run.actions) ? run.actions : [];
+  const usage = Array.isArray(run.model_usage) ? run.model_usage : [];
+  const inputTokens = usage.reduce((sum, item) => sum + Number(item.input_tokens || 0), 0);
+  const outputTokens = usage.reduce((sum, item) => sum + Number(item.output_tokens || 0), 0);
+  const evaluation = run.evaluation;
+  runDetail.className = 'metrics-detail';
+  runDetail.innerHTML = `
+    <div class="metrics-detail-head"><span>${escapeHtml(run.category || 'web')} · ${escapeHtml(run.mode || 'production')}</span><span>${escapeHtml(run.status || 'unknown')}</span></div>
+    <div class="run-meta">${escapeHtml(run.target || run.input_text || '')}</div>
+    <div class="run-meta">${actions.length} 个行动 · ${formatTokens(inputTokens)} / ${formatTokens(outputTokens)} token${evaluation ? ` · ${escapeHtml(evaluation.outcome)}${evaluation.verified ? '（已验证）' : ''}` : ''}</div>
+    ${actions.length ? actions.map(action => `
+      <div class="action-row">
+        <div class="action-row-head"><span>${escapeHtml(action.tool_name)}</span><span>${escapeHtml(action.status)}${action.duration_ms != null ? ` · ${formatDuration(action.duration_ms)}` : ''}</span></div>
+        <div class="action-row-meta">${action.protocol_error ? `协议：${escapeHtml(action.protocol_error)}` : action.effective === 1 ? '产生有效观察' : action.effective === 0 ? '未产生有效观察' : '未判定有效性'}</div>
+        ${action.output_excerpt ? `<details><summary>输出摘要</summary><div class="tool-body">${escapeHtml(action.output_excerpt)}</div></details>` : ''}
+      </div>
+    `).join('') : '<div class="empty">该运行没有工具行动。</div>'}
+  `;
+}
+
+async function loadRunDetail(runId) {
+  if (!runId) return;
+  selectedRunId = runId;
+  runDetail.className = 'empty';
+  runDetail.textContent = '正在加载运行详情…';
+  try {
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
+    if (!response.ok) throw new Error('无法读取运行详情');
+    renderRunDetail(await response.json());
+    runList.querySelectorAll('[data-run-id]').forEach(button => {
+      button.classList.toggle('active', button.dataset.runId === runId);
+    });
+  } catch (error) {
+    runDetail.className = 'empty';
+    runDetail.textContent = error.message || '读取运行详情失败。';
+  }
+}
+
+async function refreshTelemetry() {
+  refreshMetricsBtn.disabled = true;
+  try {
+    const [metricsResponse, runsResponse] = await Promise.all([
+      fetch('/api/metrics'),
+      fetch('/api/runs?limit=50')
+    ]);
+    if (!metricsResponse.ok || !runsResponse.ok) throw new Error('无法读取运行指标');
+    renderMetrics(await metricsResponse.json());
+    renderRuns((await runsResponse.json()).runs || []);
+  } catch (error) {
+    metricsSummary.innerHTML = metricItem('--', '指标不可用', error.message || '读取失败');
+    metricsCategories.className = 'empty';
+    metricsCategories.textContent = '无法读取能力域统计。';
+    runList.className = 'empty';
+    runList.textContent = '无法读取历史运行。';
+  } finally {
+    refreshMetricsBtn.disabled = false;
+  }
+}
+
+async function openMetrics() {
+  metricsOverlay.classList.add('open');
+  await refreshTelemetry();
+}
+
+function closeMetrics() {
+  metricsOverlay.classList.remove('open');
+}
+
 function renderScanState(scan) {
   if (!scan) {
     scanStateRail.className = 'empty';
@@ -1224,6 +1472,7 @@ function onScanFinished(msg) {
   const scan = applyScanSnapshot(msg.scan);
   if (scan?.status === 'stopped') markRunningToolsStopped();
   saveSessions();
+  if (metricsOverlay.classList.contains('open')) refreshTelemetry();
 }
 
 function syncThinkingControls() {
@@ -1407,7 +1656,7 @@ function exportActiveSession() {
   const session = activeSession();
   const payload = {
     exported_at: new Date().toISOString(),
-    format: 'my-agent-scan-v1.5',
+    format: 'my-agent-scan-v1.7',
     session
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -1429,6 +1678,14 @@ closeConfigBtn.onclick = () => configDialog.close();
 cancelConfigBtn.onclick = () => configDialog.close();
 thinkingEnabled.onchange = syncThinkingControls;
 configForm.onsubmit = saveConfig;
+
+metricsBtn.onclick = openMetrics;
+metricsMobileBtn.onclick = openMetrics;
+closeMetricsBtn.onclick = closeMetrics;
+refreshMetricsBtn.onclick = refreshTelemetry;
+metricsOverlay.addEventListener('click', event => {
+  if (event.target === metricsOverlay) closeMetrics();
+});
 
 // ── 工具目录 (Tool Inventory) ─────────────────────────────────
 
@@ -1544,6 +1801,9 @@ toolsSearch.addEventListener('input', () => {
   renderToolInventory(toolsSearch.value);
 });
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && metricsOverlay.classList.contains('open')) {
+    closeMetrics();
+  }
   if (e.key === 'Escape' && toolsOverlay.classList.contains('open')) {
     closeToolInventory();
   }

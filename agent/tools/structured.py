@@ -13,7 +13,11 @@ def structured_tool(tool: Any) -> StructuredTool:
     """Preserve a tool's input schema while wrapping its output in ToolResult."""
 
     def invoke(**kwargs: Any) -> str:
-        output = tool.invoke(kwargs)
+        # Calling ``tool.invoke`` here creates a nested LangChain tool run with
+        # the same name as the wrapper, which duplicates lifecycle telemetry.
+        # The wrapper has already validated the input against the original schema.
+        func = getattr(tool, "func", None)
+        output = func(**kwargs) if callable(func) else tool.invoke(kwargs, config={"callbacks": []})
         _readable, result = parse_tool_result(output)
         if result is not None:
             return str(getattr(output, "content", output))

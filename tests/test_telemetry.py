@@ -10,7 +10,8 @@ from agent.telemetry import TelemetryStore
 class TelemetryStoreTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.store = TelemetryStore(Path(self.temp.name) / "telemetry.db")
+        self.db_path = Path(self.temp.name) / "telemetry.db"
+        self.store = TelemetryStore(self.db_path)
 
     def tearDown(self):
         self.store.close()
@@ -91,6 +92,46 @@ class TelemetryStoreTests(unittest.TestCase):
         self.assertEqual(usage["input_tokens"], 120)
         self.assertEqual(usage["output_tokens"], 30)
         self.assertEqual(usage["cost_usd"], None)
+
+    def test_conversation_survives_store_reopen_and_links_runs(self):
+        conversation = self.store.create_conversation("Authorized review")
+        self.store.create_run(
+            "run-conversation",
+            input_text="Authorization: Bearer top-secret",
+            target="http://scanner.test",
+            mode="production",
+            category="web",
+            model="test-model",
+            conversation_id=conversation["id"],
+        )
+        self.store.finish_run("run-conversation", "completed", "password=unsafe should not persist")
+        self.store.close()
+        self.store = TelemetryStore(self.db_path)
+        recovered = self.store.get_conversation(conversation["id"])
+
+        self.assertEqual(recovered["runs"][0]["conversation_id"], conversation["id"])
+        self.assertEqual(recovered["messages"][0]["content"], "Authorization: Bearer [REDACTED]")
+        self.assertEqual(recovered["messages"][1]["content"], "password=[REDACTED] should not persist")
+
+    def test_delete_conversation_retains_anonymized_run(self):
+        conversation = self.store.create_conversation()
+        self.store.create_run(
+            "run-retained", input_text="scan", target="http://scanner.test", mode="production",
+            category="web", model="test-model", conversation_id=conversation["id"],
+        )
+
+        self.assertTrue(self.store.delete_conversation(conversation["id"]))
+        self.assertIsNone(self.store.get_conversation(conversation["id"]))
+        self.assertIsNone(self.store.get_run("run-retained")["conversation_id"])
+
+    def test_legacy_import_is_idempotent_and_redacts_credentials(self):
+        sessions = [{
+            "id": "legacy-1", "title": "old", "createdAt": 1_700_000_000_000,
+            "messages": [{"role": "user", "content": "api_key=old-secret", "at": 1_700_000_000_001}],
+        }]
+        self.assertEqual(self.store.import_conversations(sessions), 1)
+        self.assertEqual(self.store.import_conversations(sessions), 0)
+        self.assertEqual(self.store.get_conversation("legacy-1")["messages"][0]["content"], "api_key=[REDACTED]")
 
 
 if __name__ == "__main__":

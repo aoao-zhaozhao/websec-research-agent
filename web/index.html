@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Web Security Scanner v1.7</title>
+<title>Web Security Scanner v1.7.1</title>
 <style>
   :root {
     --bg: #111311;
@@ -647,7 +647,7 @@
     <div class="brand">
       <div>
         <h1>Web Security Scanner</h1>
-        <div class="version">v1.7</div>
+        <div class="version">v1.7.1</div>
       </div>
         <div class="brand-actions">
           <button class="icon-btn" id="metricsBtn" title="运行指标与历史">&#128202;</button>
@@ -816,8 +816,8 @@ const STAGE_STATUS_LABELS = {
 
 let ws;
 let busy = false;
-let sessions = loadSessions();
-let activeId = sessions[0]?.id || null;
+let sessions = [];
+let activeId = null;
 let currentAssistant = null;
 let currentAssistantRaw = '';
 let currentReasoning = null;
@@ -870,10 +870,6 @@ const runList = document.getElementById('runList');
 const runDetail = document.getElementById('runDetail');
 let selectedRunId = null;
 
-if (!activeId) {
-  activeId = createSession().id;
-}
-
 function loadSessions() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY) || '[]';
@@ -892,30 +888,96 @@ function loadSessions() {
 
 function saveSessions() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions.slice(0, 30)));
+  if (activeId) localStorage.setItem(`${STORAGE_KEY}-active`, activeId);
   renderSessions();
 }
 
-function createSession() {
-  const session = {
-    id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
-    title: '新扫描',
-    createdAt: Date.now(),
-    messages: [],
-    tools: [],
+function sessionFromServer(session) {
+  const runs = Array.isArray(session.runs) ? session.runs : [];
+  return {
+    ...session,
+    createdAt: Date.parse(session.created_at || '') || Date.now(),
+    messages: Array.isArray(session.messages) ? session.messages.map(message => ({
+      role: message.role,
+      content: message.content,
+      at: Date.parse(message.created_at || '') || Date.now()
+    })) : [],
+    tools: runs.flatMap(run => (run.actions || []).map(action => ({
+      id: action.tool_run_id,
+      name: action.tool_name,
+      input: action.input_data,
+      output: action.output_excerpt,
+      result: action.result_data,
+      durationMs: action.duration_ms,
+      startedAt: Date.parse(action.started_at || '') || Date.now(),
+      finishedAt: Date.parse(action.finished_at || '') || null
+    }))),
     scan: null
   };
+}
+
+async function createSession() {
+  const response = await fetch('/api/conversations', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: '新扫描' })
+  });
+  if (!response.ok) throw new Error('无法创建会话');
+  const session = sessionFromServer(await response.json());
   sessions.unshift(session);
   saveSessions();
   return session;
 }
 
+async function persistSessionTitle(session) {
+  const response = await fetch(`/api/conversations/${encodeURIComponent(session.id)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: session.title })
+  });
+  if (!response.ok) throw new Error('保存会话名称失败');
+}
+
 function activeSession() {
   let session = sessions.find(item => item.id === activeId);
   if (!session) {
-    session = createSession();
-    activeId = session.id;
+    session = { id: '', title: '新扫描', messages: [], tools: [], scan: null };
   }
   return session;
+}
+
+async function selectSession(sessionId) {
+  const response = await fetch(`/api/conversations/${encodeURIComponent(sessionId)}`);
+  if (!response.ok) throw new Error('无法读取会话');
+  const hydrated = sessionFromServer(await response.json());
+  const index = sessions.findIndex(item => item.id === sessionId);
+  if (index >= 0) sessions[index] = hydrated;
+  else sessions.unshift(hydrated);
+  activeId = sessionId;
+  currentAssistant = null;
+  currentAssistantRaw = '';
+  toolCards.clear();
+  saveSessions();
+  renderConversation();
+}
+
+async function bootstrapSessions() {
+  const legacySessions = loadSessions();
+  if (legacySessions.length) {
+    await fetch('/api/conversations/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessions: legacySessions })
+    });
+  }
+  const response = await fetch('/api/conversations');
+  if (!response.ok) throw new Error('无法读取会话列表');
+  const data = await response.json();
+  sessions = (data.conversations || []).map(sessionFromServer);
+  const cachedId = localStorage.getItem(`${STORAGE_KEY}-active`);
+  if (!sessions.length) {
+    const session = await createSession();
+    activeId = session.id;
+  } else {
+    await selectSession(sessions.some(session => session.id === cachedId) ? cachedId : sessions[0].id);
+  }
+  renderSessions();
+  renderConversation();
 }
 
 function escapeHtml(value) {
@@ -1068,14 +1130,7 @@ function renderSessions() {
       <div class="session-title">${escapeHtml(session.title)}</div>
       <div class="session-meta">${new Date(session.createdAt).toLocaleString()}</div>
     `;
-    btn.onclick = () => {
-      activeId = session.id;
-      currentAssistant = null;
-      currentAssistantRaw = '';
-      toolCards.clear();
-      renderSessions();
-      renderConversation();
-    };
+    btn.onclick = () => selectSession(session.id).catch(error => window.alert(error.message || '无法切换会话'));
     const actions = document.createElement('div');
     actions.className = 'session-actions';
     actions.innerHTML = `
@@ -1084,11 +1139,11 @@ function renderSessions() {
     `;
     actions.children[0].onclick = event => {
       event.stopPropagation();
-      renameSession(session.id);
+      renameSession(session.id).catch(error => window.alert(error.message || '重命名失败'));
     };
     actions.children[1].onclick = event => {
       event.stopPropagation();
-      deleteSession(session.id);
+      deleteSession(session.id).catch(error => window.alert(error.message || '删除会话失败'));
     };
     row.append(btn, actions);
     sessionsEl.appendChild(row);
@@ -1607,6 +1662,7 @@ function send() {
   const session = activeSession();
   if (session.title === '新扫描') {
     session.title = text.length > 42 ? `${text.slice(0, 42)}...` : text;
+    persistSessionTitle(session).catch(error => window.alert(error.message || '保存会话名称失败'));
   }
   addMessage('user', text);
   input.value = '';
@@ -1619,7 +1675,7 @@ function send() {
   updateStages(null);
   setBusy(true);
   saveSessions();
-  ws.send(JSON.stringify({ content: text }));
+  ws.send(JSON.stringify({ content: text, conversation_id: session.id }));
 }
 
 function stopScan() {
@@ -1628,7 +1684,7 @@ function stopScan() {
   ws.send(JSON.stringify({ command: 'stop' }));
 }
 
-function renameSession(sessionId) {
+async function renameSession(sessionId) {
   const session = sessions.find(item => item.id === sessionId);
   if (!session) return;
   const title = window.prompt('扫描名称', session.title);
@@ -1636,17 +1692,21 @@ function renameSession(sessionId) {
   const normalized = title.trim().slice(0, 80);
   if (!normalized) return;
   session.title = normalized;
+  await persistSessionTitle(session);
   saveSessions();
 }
 
-function deleteSession(sessionId) {
+async function deleteSession(sessionId) {
   const session = sessions.find(item => item.id === sessionId);
   if (!session || !window.confirm(`删除“${session.title}”？`)) return;
+  const response = await fetch(`/api/conversations/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+  if (!response.ok) throw new Error('删除会话失败');
   sessions = sessions.filter(item => item.id !== sessionId);
   if (!sessions.length) {
-    activeId = createSession().id;
+    const replacement = await createSession();
+    activeId = replacement.id;
   } else if (activeId === sessionId) {
-    activeId = sessions[0].id;
+    await selectSession(sessions[0].id);
   }
   saveSessions();
   renderConversation();
@@ -1656,7 +1716,7 @@ function exportActiveSession() {
   const session = activeSession();
   const payload = {
     exported_at: new Date().toISOString(),
-    format: 'my-agent-scan-v1.7',
+    format: 'my-agent-scan-v1.7.1',
     session
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -1831,8 +1891,8 @@ clearBtn.onclick = () => {
   saveSessions();
   renderConversation();
 };
-newSessionBtn.onclick = () => {
-  const session = createSession();
+newSessionBtn.onclick = async () => {
+  const session = await createSession();
   activeId = session.id;
   currentAssistant = null;
   currentAssistantRaw = '';
@@ -1842,9 +1902,13 @@ newSessionBtn.onclick = () => {
   renderConversation();
   input.focus();
 };
-clearHistoryBtn.onclick = () => {
+clearHistoryBtn.onclick = async () => {
+  if (!window.confirm('清空所有会话历史？已保留的匿名运行指标不会受到影响。')) return;
+  const response = await fetch('/api/conversations', { method: 'DELETE' });
+  if (!response.ok) return window.alert('清空历史失败');
   sessions = [];
-  activeId = createSession().id;
+  const session = await createSession();
+  activeId = session.id;
   renderConversation();
 };
 exportSessionBtn.onclick = exportActiveSession;
@@ -1854,10 +1918,14 @@ setInterval(() => {
   if (scan?.status === 'running') renderScanState(scan);
 }, 1000);
 
-renderSessions();
-renderConversation();
-connect();
-input.focus();
+bootstrapSessions()
+  .catch(error => {
+    conversation.innerHTML = `<div class="empty">${escapeHtml(error.message || '会话服务不可用。')}</div>`;
+  })
+  .finally(() => {
+    connect();
+    input.focus();
+  });
 </script>
 </body>
 </html>

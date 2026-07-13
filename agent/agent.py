@@ -105,6 +105,20 @@ class Agent:
     def clear(self) -> None:
         self.messages = [SystemMessage(content=SYSTEM_PROMPT)]
 
+    def restore_history(self, messages: list[dict[str, Any]]) -> None:
+        """Rebuild the bounded model context from a durable conversation."""
+        restored: list[Any] = [SystemMessage(content=SYSTEM_PROMPT)]
+        for message in messages:
+            content = str(message.get("content", "")).strip()
+            if not content:
+                continue
+            if message.get("role") == "user":
+                restored.append(HumanMessage(content=content))
+            elif message.get("role") == "assistant":
+                restored.append(AIMessage(content=content))
+        self.messages = restored
+        self._trim_history()
+
     def finish_scan(self, status: str) -> list[dict[str, Any]]:
         """Return terminal lifecycle events for the current or latest scan."""
         scan = self._active_scan or self.last_scan
@@ -188,6 +202,7 @@ class Agent:
         *,
         mode: str = "production",
         category: str = "web",
+        conversation_id: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """
         Execute one turn and yield structured events.
@@ -208,6 +223,7 @@ class Agent:
                 mode=mode,
                 category=category,
                 model=self.config.model,
+                conversation_id=conversation_id,
             )
         self.messages.append(HumanMessage(content=user_input))
         self._trim_history()
@@ -240,6 +256,8 @@ class Agent:
                         yield {"type": "reasoning", "scan_id": scan.scan_id, "content": reasoning}
                     if chunk.content:
                         full_response.append(chunk.content)
+                        if telemetry is not None:
+                            telemetry.update_run_summary(scan.scan_id, "".join(full_response))
                         yield {"type": "token", "scan_id": scan.scan_id, "content": chunk.content}
                 elif kind == "on_chat_model_end":
                     self._record_model_usage(scan.scan_id, event.get("data", {}).get("output"))

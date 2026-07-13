@@ -1,4 +1,4 @@
-"""FastAPI server for WebSec Research Agent v1.7."""
+"""FastAPI server for WebSec Research Agent v1.7.1."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from agent.telemetry import TelemetryStore
 
 load_dotenv(PROJECT_ROOT / ".env")
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -126,6 +126,60 @@ async def update_config(data: dict):
 @app.get("/api/sessions")
 async def get_sessions():
     return {"active_sessions": active_sessions}
+
+
+@app.get("/api/conversations")
+async def list_conversations():
+    return {"conversations": telemetry_store.list_conversations()}
+
+
+@app.post("/api/conversations")
+async def create_conversation(data: dict | None = None):
+    title = str((data or {}).get("title", "新扫描"))
+    return telemetry_store.create_conversation(title=title)
+
+
+@app.post("/api/conversations/import")
+async def import_conversations(data: dict):
+    sessions = data.get("sessions", [])
+    if not isinstance(sessions, list):
+        raise HTTPException(status_code=422, detail="sessions must be a list")
+    return {"imported": telemetry_store.import_conversations(sessions)}
+
+
+@app.get("/api/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    conversation = telemetry_store.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return conversation
+
+
+@app.put("/api/conversations/{conversation_id}")
+async def rename_conversation(conversation_id: str, data: dict):
+    title = str(data.get("title", "")).strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="title must not be empty")
+    conversation = telemetry_store.rename_conversation(conversation_id, title)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return conversation
+
+
+@app.delete("/api/conversations")
+async def delete_all_conversations():
+    return {
+        "status": "ok",
+        "deleted": telemetry_store.delete_all_conversations(),
+        "run_retention": "anonymized",
+    }
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    if not telemetry_store.delete_conversation(conversation_id):
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return {"status": "ok", "run_retention": "anonymized"}
 
 
 @app.get("/api/metrics")
@@ -255,7 +309,8 @@ async def chat(ws: WebSocket):
     global active_sessions
 
     await ws.accept()
-    agent = Agent(agent_config, telemetry=telemetry_store)
+    agent: Agent | None = None
+    conversation_id: str | None = None
     scan_task: asyncio.Task | None = None
     send_lock = asyncio.Lock()
     active_sessions += 1
@@ -265,9 +320,12 @@ async def chat(ws: WebSocket):
         async with send_lock:
             await ws.send_json(payload)
 
-    async def run_scan(user_input: str, mode: str, category: str) -> None:
+    async def run_scan(user_input: str, mode: str, category: str, scan_conversation_id: str) -> None:
+        assert agent is not None
         try:
-            async for event in agent.run_events(user_input, mode=mode, category=category):
+            async for event in agent.run_events(
+                user_input, mode=mode, category=category, conversation_id=scan_conversation_id
+            ):
                 if event.get("type") in {"tool_started", "tool_finished"}:
                     event["input"] = _json_safe(event.get("input"))
                     event["output"] = _json_safe(event.get("output"))
@@ -306,7 +364,8 @@ async def chat(ws: WebSocket):
             if msg.get("command") == "clear":
                 if scan_task and not scan_task.done():
                     scan_task.cancel()
-                agent.clear()
+                if agent is not None:
+                    agent.clear()
                 await send_json({"type": "info", "content": "对话记忆已清空"})
                 continue
 
@@ -318,12 +377,21 @@ async def chat(ws: WebSocket):
                 await send_json({"type": "error", "content": "mode must be production or benchmark"})
                 continue
             category = str(msg.get("category", "web")).strip().lower()[:80] or "web"
+            requested_conversation_id = str(msg.get("conversation_id", "")).strip()[:120]
+            conversation = telemetry_store.get_conversation(requested_conversation_id)
+            if not requested_conversation_id or conversation is None:
+                await send_json({"type": "error", "content": "会话不存在，请刷新后重试"})
+                continue
 
             if scan_task and not scan_task.done():
                 await send_json({"type": "error", "content": "已有扫描正在运行，请先停止当前扫描"})
                 continue
 
-            scan_task = asyncio.create_task(run_scan(user_input, mode, category))
+            if conversation_id != requested_conversation_id:
+                agent = Agent(agent_config, telemetry=telemetry_store)
+                agent.restore_history(conversation["messages"])
+                conversation_id = requested_conversation_id
+            scan_task = asyncio.create_task(run_scan(user_input, mode, category, requested_conversation_id))
 
     except WebSocketDisconnect:
         print(f"[WS] session closed (active: {active_sessions - 1})")

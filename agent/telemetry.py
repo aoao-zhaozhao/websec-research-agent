@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -22,11 +23,33 @@ def _now_iso() -> str:
 
 
 def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return json.dumps(_redact(value), ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _redact(value: Any) -> Any:
+    """Remove common credentials before durable storage."""
+    secret_keys = {"authorization", "cookie", "password", "passwd", "secret", "api_key", "apikey", "token"}
+    if isinstance(value, dict):
+        return {
+            str(key): "[REDACTED]" if str(key).lower().replace("-", "_") in secret_keys else _redact(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if not isinstance(value, str):
+        return value
+    text = value
+    for pattern in (
+        r"(?i)(bearer\s+)[^\s,;]+",
+        r"(?i)((?:api[_-]?key|token|password|passwd|secret)\s*[=:]\s*)[^\s&;,]+",
+        r"(?i)(cookie\s*[:=]\s*)[^\r\n]+",
+    ):
+        text = re.sub(pattern, r"\1[REDACTED]", text)
+    return text
 
 
 class TelemetryStore:
-    """SQLite store for runs, actions, model usage, and judge outcomes."""
+    """SQLite store for durable conversations, runs, actions, and evaluations."""
 
     def __init__(self, db_path: Path | str | None = None):
         self.path = Path(db_path or DEFAULT_DB_PATH)
@@ -63,6 +86,22 @@ class TelemetryStore:
                 started_at TEXT NOT NULL,
                 finished_at TEXT,
                 summary TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '新扫描',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+            );
+
+            CREATE TABLE IF NOT EXISTS conversation_messages (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                content TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS telemetry_actions (
@@ -114,9 +153,117 @@ class TelemetryStore:
                 ON telemetry_actions(run_id, sequence_number);
             CREATE INDEX IF NOT EXISTS idx_telemetry_usage_run
                 ON telemetry_model_usage(run_id);
+            CREATE INDEX IF NOT EXISTS idx_conversations_updated
+                ON conversations(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation
+                ON conversation_messages(conversation_id, created_at);
             """
         )
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(telemetry_runs)")}
+        if "conversation_id" not in columns:
+            self._conn.execute(
+                "ALTER TABLE telemetry_runs ADD COLUMN conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL"
+            )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_telemetry_runs_conversation ON telemetry_runs(conversation_id, started_at DESC)"
+        )
         self._conn.commit()
+
+    def create_conversation(self, title: str = "新扫描", conversation_id: str | None = None) -> dict[str, Any]:
+        conversation_id = conversation_id or str(uuid.uuid4())
+        now = _now_iso()
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at, status)
+            VALUES (?, ?, ?, ?, 'active')
+            """,
+            (conversation_id, _redact(title)[:80] or "新扫描", now, now),
+        )
+        self._conn.commit()
+        return self.get_conversation(conversation_id) or {}
+
+    def list_conversations(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT c.*, COUNT(r.id) AS run_count, MAX(r.started_at) AS last_run_at
+            FROM conversations c LEFT JOIN telemetry_runs r ON r.conversation_id=c.id
+            GROUP BY c.id ORDER BY c.updated_at DESC LIMIT ?
+            """,
+            (max(1, min(limit, 200)),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM conversations WHERE id=?", (conversation_id,)).fetchone()
+        if row is None:
+            return None
+        conversation = dict(row)
+        runs = self._conn.execute(
+            "SELECT * FROM telemetry_runs WHERE conversation_id=? ORDER BY started_at",
+            (conversation_id,),
+        ).fetchall()
+        messages = [dict(item) for item in self._conn.execute(
+            "SELECT role, content, created_at FROM conversation_messages WHERE conversation_id=? ORDER BY created_at, id",
+            (conversation_id,),
+        ).fetchall()]
+        for run in runs:
+            messages.append({"role": "user", "content": run["input_text"], "created_at": run["started_at"]})
+            if run["summary"]:
+                messages.append({"role": "assistant", "content": run["summary"], "created_at": run["finished_at"] or run["started_at"]})
+        messages.sort(key=lambda item: str(item["created_at"]))
+        conversation["messages"] = messages
+        conversation["runs"] = [self.get_run(str(item["id"])) for item in runs]
+        return conversation
+
+    def rename_conversation(self, conversation_id: str, title: str) -> dict[str, Any] | None:
+        self._conn.execute(
+            "UPDATE conversations SET title=?, updated_at=? WHERE id=?",
+            (_redact(title)[:80] or "新扫描", _now_iso(), conversation_id),
+        )
+        self._conn.commit()
+        return self.get_conversation(conversation_id)
+
+    def delete_conversation(self, conversation_id: str) -> bool:
+        # Retain de-identified run telemetry for aggregate metrics and audits.
+        cursor = self._conn.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def delete_all_conversations(self) -> int:
+        cursor = self._conn.execute("DELETE FROM conversations")
+        self._conn.commit()
+        return cursor.rowcount
+
+    def import_conversations(self, sessions: list[dict[str, Any]]) -> int:
+        imported = 0
+        for session in sessions[:100]:
+            conversation_id = str(session.get("id", "")).strip()[:120]
+            if not conversation_id or self.get_conversation(conversation_id) is not None:
+                continue
+            title = str(session.get("title", "新扫描"))
+            created_at = self._legacy_time(session.get("createdAt"))
+            self._conn.execute(
+                "INSERT INTO conversations (id, title, created_at, updated_at, status) VALUES (?, ?, ?, ?, 'active')",
+                (conversation_id, _redact(title)[:80] or "新扫描", created_at, created_at),
+            )
+            for message in session.get("messages", [])[:500]:
+                role = str(message.get("role", ""))
+                if role not in {"user", "assistant"}:
+                    continue
+                self._conn.execute(
+                    "INSERT INTO conversation_messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (str(uuid.uuid4()), conversation_id, role, _redact(str(message.get("content", "")))[:12000], self._legacy_time(message.get("at"))),
+                )
+            imported += 1
+        self._conn.commit()
+        return imported
+
+    @staticmethod
+    def _legacy_time(value: Any) -> str:
+        try:
+            return datetime.fromtimestamp(float(value) / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except (TypeError, ValueError, OSError):
+            return _now_iso()
 
     def create_run(
         self,
@@ -127,15 +274,18 @@ class TelemetryStore:
         mode: str,
         category: str,
         model: str,
+        conversation_id: str | None = None,
     ) -> dict[str, Any]:
         self._conn.execute(
             """
             INSERT OR IGNORE INTO telemetry_runs
-                (id, input_text, target, mode, category, model, status, started_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+                (id, input_text, target, mode, category, model, conversation_id, status, started_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)
             """,
-            (run_id, input_text, target, mode, category, model, _now_iso()),
+            (run_id, _redact(input_text), _redact(target), mode, category, model, conversation_id, _now_iso()),
         )
+        if conversation_id:
+            self._conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (_now_iso(), conversation_id))
         self._conn.commit()
         return self.get_run(run_id) or {}
 
@@ -146,7 +296,21 @@ class TelemetryStore:
             SET status=?, finished_at=COALESCE(finished_at, ?), summary=?
             WHERE id=?
             """,
-            (status, _now_iso(), summary[:4000], run_id),
+            (status, _now_iso(), _redact(summary)[:4000], run_id),
+        )
+        self._conn.execute(
+            """
+            UPDATE conversations SET updated_at=?
+            WHERE id=(SELECT conversation_id FROM telemetry_runs WHERE id=?)
+            """,
+            (_now_iso(), run_id),
+        )
+        self._conn.commit()
+
+    def update_run_summary(self, run_id: str, summary: str) -> None:
+        self._conn.execute(
+            "UPDATE telemetry_runs SET summary=? WHERE id=?",
+            (_redact(summary)[:4000], run_id),
         )
         self._conn.commit()
 

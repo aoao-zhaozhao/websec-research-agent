@@ -24,7 +24,7 @@ My Agent 的产品定位仍是 Web 安全研究与授权测试 Agent，不是面
 
 ## 当前基线
 
-当前版本：v1.7 WebSec Research Agent。
+当前版本：v1.7.1 WebSec Research Agent。
 
 - 使用 LangGraph 编排，并提供 FastAPI/WebSocket 工作台。
 - 提供 39 个 Web 安全、证据、Skill 和案例记忆工具。

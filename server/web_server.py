@@ -23,7 +23,7 @@ from agent.telemetry import TelemetryStore
 
 load_dotenv(PROJECT_ROOT / ".env")
 
-APP_VERSION = "1.7.4"
+APP_VERSION = "1.7.5"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -186,6 +186,15 @@ async def delete_conversation(conversation_id: str):
 async def get_metrics(category: str | None = None, mode: str | None = None):
     """Return durable v1.7 runtime metrics for production and benchmark runs."""
     return telemetry_store.metrics(category=category, mode=mode)
+
+
+@app.get("/api/usage-stats")
+async def get_usage_stats(range: str = "all"):
+    """Return model-usage aggregates for the frontend Stats view."""
+    try:
+        return telemetry_store.usage_stats(date_range=range)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/runs")

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Web Security Scanner v1.7.3</title>
+<title>Web Security Scanner v1.7.5</title>
 <style>
   :root {
     --bg: #111311;
@@ -24,8 +24,11 @@
 
   * { box-sizing: border-box; }
   html, body {
+    width: 100%;
     height: 100%;
+    min-height: 0;
     overflow: hidden;
+    overscroll-behavior: none;
   }
   body {
     margin: 0;
@@ -52,7 +55,10 @@
   }
 
   .app {
-    height: 100vh;
+    width: 100%;
+    height: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
     min-height: 0;
     overflow: hidden;
     display: grid;
@@ -64,6 +70,7 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
+    min-height: 0;
   }
   .brand {
     padding: 16px;
@@ -191,6 +198,7 @@
   .workspace {
     min-height: 0;
     overflow: hidden;
+    max-height: 100%;
     display: grid;
     grid-template-columns: minmax(0, 1fr) 360px;
   }
@@ -468,7 +476,7 @@
     justify-content: space-between;
   }
   .metrics-panel {
-    width: min(1040px, calc(100vw - 48px));
+    width: min(1180px, calc(100vw - 48px));
     max-height: calc(100vh - 48px);
     background: var(--panel);
     border: 1px solid var(--line);
@@ -489,6 +497,40 @@
   .metrics-header h2 { margin: 0; font-size: 16px; }
   .metrics-header-actions { display: flex; gap: 8px; }
   .metrics-body { min-height: 0; overflow-y: auto; padding: 18px; }
+  .stats-tabs, .stats-ranges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .stats-tab, .stats-range { min-height: 30px; padding: 4px 10px; border-radius: 4px; background: transparent; color: var(--muted); font-size: 12px; }
+  .stats-tab.active { color: #121512; background: var(--green); border-color: var(--green); }
+  .stats-range.active { color: var(--amber); border-color: var(--amber); }
+  .stats-view[hidden] { display: none; }
+  .usage-hero { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+  .usage-hero h3 { margin: 0; color: var(--text); font-size: 19px; }
+  .usage-hero p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+  .heatmap-wrap { overflow-x: auto; padding: 8px 0 2px; }
+  .heatmap { display: grid; grid-template-rows: auto auto; gap: 5px; min-width: 760px; }
+  .heatmap-months, .heatmap-grid { display: grid; grid-template-columns: repeat(54, 12px); gap: 3px; }
+  .heatmap-months { color: var(--muted); font-size: 10px; min-height: 14px; align-items: end; }
+  .heatmap-grid { grid-template-rows: repeat(7, 12px); grid-auto-flow: column; }
+  .heat-cell { width: 12px; height: 12px; border-radius: 2px; background: #242923; }
+  .heat-cell[data-level="1"] { background: #315a42; }
+  .heat-cell[data-level="2"] { background: #3f8c5b; }
+  .heat-cell[data-level="3"] { background: #55c67a; }
+  .heat-cell[data-level="4"] { background: #b8e06d; }
+  .heat-cell.future { visibility: hidden; }
+  .heat-legend { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; margin-top: 8px; }
+  .heat-legend .heat-cell { display: inline-block; }
+  .usage-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+  .usage-fact { padding: 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .usage-fact-label { color: var(--muted); font-size: 11px; }
+  .usage-fact-value { margin-top: 5px; color: var(--text); font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
+  .usage-fact-value.accent { color: var(--green); }
+  .model-chart { height: 250px; display: flex; align-items: end; gap: 5px; padding: 22px 0 28px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .model-bar { width: 24px; min-width: 24px; height: 100%; display: flex; flex-direction: column; justify-content: end; position: relative; }
+  .model-bar > span { display: block; width: 100%; min-height: 2px; border: 1px solid currentColor; border-radius: 4px 4px 0 0; background: color-mix(in srgb, currentColor 24%, transparent); }
+  .model-bar label { position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%) rotate(-42deg); transform-origin: top; white-space: nowrap; color: var(--muted); font-size: 10px; }
+  .model-breakdown { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+  .model-row { padding: 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .model-row-name { color: var(--text); font-size: 13px; font-weight: 700; }
+  .model-row-meta { margin-top: 6px; color: var(--muted); font-size: 11px; }
   .metrics-section + .metrics-section { margin-top: 22px; }
   .metrics-section h3 { margin: 0 0 9px; color: var(--soft); font-size: 13px; }
   .metrics-grid {
@@ -656,6 +698,8 @@
     .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .metric-item:nth-child(3n) { border-right: 1px solid var(--line); }
     .metric-item:nth-child(2n) { border-right: 0; }
+    .usage-hero { flex-direction: column; }
+    .usage-facts, .model-breakdown { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -665,7 +709,7 @@
     <div class="brand">
       <div>
         <h1>Web Security Scanner</h1>
-        <div class="version">v1.7.4</div>
+        <div class="version">v1.7.5</div>
       </div>
         <div class="brand-actions">
           <button class="icon-btn" id="metricsBtn" title="运行指标与历史">&#128202;</button>
@@ -748,6 +792,29 @@
       </div>
     </div>
     <div class="metrics-body">
+      <section class="usage-hero">
+        <div><h3>Usage stats</h3><p>基于本地持久化运行记录的模型用量与活跃度。</p></div>
+        <div class="stats-ranges" aria-label="统计时间范围">
+          <button class="stats-range active" data-range="all" type="button">全部时间</button>
+          <button class="stats-range" data-range="7d" type="button">近 7 天</button>
+          <button class="stats-range" data-range="30d" type="button">近 30 天</button>
+        </div>
+      </section>
+      <div class="stats-tabs" role="tablist" aria-label="统计视图">
+        <button class="stats-tab active" data-stats-tab="overview" type="button">概览</button>
+        <button class="stats-tab" data-stats-tab="models" type="button">模型</button>
+      </div>
+      <div id="usageLoading" class="empty">正在读取用量统计…</div>
+      <div id="usageStatsContent" hidden>
+        <div class="stats-view" data-stats-view="overview">
+          <section class="metrics-section"><h3>活跃度</h3><div id="usageHeatmap" class="heatmap-wrap"></div></section>
+          <section class="metrics-section"><h3>本时间范围</h3><div id="usageFacts" class="usage-facts"></div></section>
+        </div>
+        <div class="stats-view" data-stats-view="models" hidden>
+          <section class="metrics-section"><h3>每日 token 用量</h3><div id="modelChart" class="model-chart"></div></section>
+          <section class="metrics-section"><h3>模型明细</h3><div id="modelBreakdown" class="model-breakdown"></div></section>
+        </div>
+      </div>
       <section class="metrics-section">
         <h3>总体</h3>
         <div class="metrics-grid" id="metricsSummary"></div>
@@ -896,7 +963,14 @@ const metricsSummary = document.getElementById('metricsSummary');
 const metricsCategories = document.getElementById('metricsCategories');
 const runList = document.getElementById('runList');
 const runDetail = document.getElementById('runDetail');
+const usageLoading = document.getElementById('usageLoading');
+const usageStatsContent = document.getElementById('usageStatsContent');
+const usageHeatmap = document.getElementById('usageHeatmap');
+const usageFacts = document.getElementById('usageFacts');
+const modelChart = document.getElementById('modelChart');
+const modelBreakdown = document.getElementById('modelBreakdown');
 let selectedRunId = null;
+let usageRange = 'all';
 
 function loadSessions() {
   try {
@@ -1361,6 +1435,114 @@ function metricItem(value, label, note = '') {
   return `<div class="metric-item"><div class="metric-value">${escapeHtml(value)}</div><div class="metric-label">${escapeHtml(label)}</div>${note ? `<div class="metric-note">${escapeHtml(note)}</div>` : ''}</div>`;
 }
 
+function formatCompactTokens(value) {
+  const number = Number(value || 0);
+  if (number >= 1000000) return `${(number / 1000000).toFixed(number >= 10000000 ? 0 : 1)}M`;
+  if (number >= 1000) return `${(number / 1000).toFixed(number >= 100000 ? 0 : 1)}K`;
+  return formatTokens(number);
+}
+
+function formatStatsDuration(value) {
+  const seconds = Math.max(0, Math.round(Number(value || 0) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+function formatStatsDate(value) {
+  if (!value) return '--';
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+}
+
+function getHeatmapDates() {
+  const end = new Date();
+  end.setHours(0, 0, 0, 0);
+  const start = new Date(end);
+  start.setDate(start.getDate() - 370);
+  start.setDate(start.getDate() - start.getDay());
+  return Array.from({ length: 378 }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    return date;
+  });
+}
+
+function localDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function renderUsageHeatmap(daily) {
+  const tokenByDate = new Map((daily || []).map(item => [item.date, Number(item.tokens || 0)]));
+  const dates = getHeatmapDates();
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const maximum = Math.max(...Array.from(tokenByDate.values()), 0);
+  let previousMonth = -1;
+  const months = dates.filter((_, index) => index % 7 === 0).map(date => {
+    const month = date.getMonth();
+    const label = month === previousMonth ? '' : date.toLocaleDateString('en-US', { month: 'short' });
+    previousMonth = month;
+    return `<span>${label}</span>`;
+  }).join('');
+  const cells = dates.map(date => {
+    const key = localDateKey(date);
+    const tokens = tokenByDate.get(key) || 0;
+    const level = !tokens || !maximum ? 0 : Math.min(4, Math.ceil(tokens / maximum * 4));
+    const future = date > today ? ' future' : '';
+    return `<span class="heat-cell${future}" data-level="${level}" title="${key}: ${formatTokens(tokens)} tokens"></span>`;
+  }).join('');
+  usageHeatmap.innerHTML = `<div class="heatmap"><div class="heatmap-months">${months}</div><div class="heatmap-grid">${cells}</div></div><div class="heat-legend"><span>少</span><span class="heat-cell"></span><span class="heat-cell" data-level="1"></span><span class="heat-cell" data-level="2"></span><span class="heat-cell" data-level="3"></span><span class="heat-cell" data-level="4"></span><span>多</span></div>`;
+}
+
+function renderUsageStats(data) {
+  const overview = data?.overview || {};
+  const daily = Array.isArray(data?.daily) ? data.daily : [];
+  const models = Array.isArray(data?.models) ? data.models : [];
+  renderUsageHeatmap(daily);
+  const facts = [
+    ['常用模型', overview.favorite_model || '--', true],
+    ['总 token', formatCompactTokens(overview.total_tokens)],
+    ['运行次数', formatTokens(overview.total_sessions)],
+    ['活跃天数', formatTokens(overview.active_days)],
+    ['最长运行', formatStatsDuration(overview.longest_session_ms)],
+    ['最长连续', `${overview.longest_streak || 0} 天`],
+    ['当前连续', `${overview.current_streak || 0} 天`],
+    ['最活跃日期', formatStatsDate(overview.most_active_day)],
+  ];
+  usageFacts.innerHTML = facts.map(([label, value, accent]) => `<div class="usage-fact"><div class="usage-fact-label">${escapeHtml(label)}</div><div class="usage-fact-value${accent ? ' accent' : ''}">${escapeHtml(value)}</div></div>`).join('');
+  const maximum = Math.max(...daily.map(item => Number(item.tokens || 0)), 0);
+  const colors = ['#67a8ff', '#55c67a', '#e4b94f', '#b38cff', '#ec6a6a'];
+  modelChart.innerHTML = daily.length ? daily.map((item, index) => {
+    const height = maximum ? Math.max(2, Math.round(Number(item.tokens || 0) / maximum * 100)) : 2;
+    return `<div class="model-bar" style="color:${colors[index % colors.length]}" title="${item.date}: ${formatTokens(item.tokens)} tokens"><span style="height:${height}%"></span><label>${formatStatsDate(item.date)}</label></div>`;
+  }).join('') : '<div class="empty">尚无模型用量记录。</div>';
+  modelBreakdown.innerHTML = models.length ? models.map(item => `<div class="model-row"><div class="model-row-name">${escapeHtml(item.model)}</div><div class="model-row-meta">总计 ${formatCompactTokens(item.tokens)} tokens</div><div class="model-row-meta">输入 ${formatCompactTokens(item.input_tokens)} · 输出 ${formatCompactTokens(item.output_tokens)} · 缓存 ${formatCompactTokens(item.cached_tokens)}</div></div>`).join('') : '<div class="empty">尚无模型用量记录。</div>';
+}
+
+function setStatsTab(tab) {
+  document.querySelectorAll('[data-stats-tab]').forEach(button => button.classList.toggle('active', button.dataset.statsTab === tab));
+  document.querySelectorAll('[data-stats-view]').forEach(view => { view.hidden = view.dataset.statsView !== tab; });
+}
+
+async function refreshUsageStats() {
+  usageLoading.hidden = false;
+  usageStatsContent.hidden = true;
+  try {
+    const response = await fetch(`/api/usage-stats?range=${encodeURIComponent(usageRange)}`);
+    if (!response.ok) throw new Error('无法读取用量统计');
+    renderUsageStats(await response.json());
+    usageStatsContent.hidden = false;
+  } catch (error) {
+    usageLoading.textContent = error.message || '读取用量统计失败。';
+  } finally {
+    if (!usageStatsContent.hidden) usageLoading.hidden = true;
+  }
+}
+
 function renderMetrics(data) {
   const runs = data?.runs || {};
   const actions = data?.actions || {};
@@ -1463,6 +1645,7 @@ async function refreshTelemetry() {
     if (!metricsResponse.ok || !runsResponse.ok) throw new Error('无法读取运行指标');
     renderMetrics(await metricsResponse.json());
     renderRuns((await runsResponse.json()).runs || []);
+    await refreshUsageStats();
   } catch (error) {
     metricsSummary.innerHTML = metricItem('--', '指标不可用', error.message || '读取失败');
     metricsCategories.className = 'empty';
@@ -1476,6 +1659,7 @@ async function refreshTelemetry() {
 
 async function openMetrics() {
   metricsOverlay.classList.add('open');
+  setStatsTab('overview');
   await refreshTelemetry();
 }
 
@@ -1809,6 +1993,16 @@ closeMetricsBtn.onclick = closeMetrics;
 refreshMetricsBtn.onclick = refreshTelemetry;
 metricsOverlay.addEventListener('click', event => {
   if (event.target === metricsOverlay) closeMetrics();
+});
+document.querySelectorAll('[data-range]').forEach(button => {
+  button.onclick = async () => {
+    usageRange = button.dataset.range || 'all';
+    document.querySelectorAll('[data-range]').forEach(item => item.classList.toggle('active', item === button));
+    await refreshUsageStats();
+  };
+});
+document.querySelectorAll('[data-stats-tab]').forEach(button => {
+  button.onclick = () => setStatsTab(button.dataset.statsTab || 'overview');
 });
 
 // ── 工具目录 (Tool Inventory) ─────────────────────────────────

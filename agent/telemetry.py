@@ -8,7 +8,7 @@ import re
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -646,6 +646,128 @@ class TelemetryStore:
                 for row in category_rows
             }
         return result
+
+    def usage_stats(self, date_range: str = "all") -> dict[str, Any]:
+        """Aggregate durable model usage for the browser statistics view."""
+        if date_range not in {"all", "7d", "30d"}:
+            raise ValueError("date_range must be all, 7d, or 30d")
+
+        clauses: list[str] = []
+        values: list[Any] = []
+        if date_range != "all":
+            days = int(date_range[:-1])
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days - 1)).strftime("%Y-%m-%dT00:00:00Z")
+            clauses.append("r.started_at >= ?")
+            values.append(cutoff)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+        usage_rows = self._conn.execute(
+            f"""
+            SELECT substr(r.started_at, 1, 10) AS day,
+                   COALESCE(NULLIF(u.model, ''), NULLIF(r.model, ''), 'unknown') AS model,
+                   COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(u.cached_tokens), 0) AS cached_tokens
+            FROM telemetry_runs r
+            LEFT JOIN telemetry_model_usage u ON u.run_id=r.id
+            {where}
+            GROUP BY substr(r.started_at, 1, 10), COALESCE(NULLIF(u.model, ''), NULLIF(r.model, ''), 'unknown')
+            ORDER BY substr(r.started_at, 1, 10), COALESCE(NULLIF(u.model, ''), NULLIF(r.model, ''), 'unknown')
+            """,
+            values,
+        ).fetchall()
+        run_rows = self._conn.execute(
+            f"""
+            SELECT substr(r.started_at, 1, 10) AS day,
+                   COUNT(*) AS sessions,
+                   MAX(CASE WHEN r.finished_at IS NOT NULL
+                       THEN CAST((julianday(r.finished_at) - julianday(r.started_at)) * 86400000 AS INTEGER)
+                       ELSE 0 END) AS longest_session_ms
+            FROM telemetry_runs r
+            {where}
+            GROUP BY day
+            ORDER BY day
+            """,
+            values,
+        ).fetchall()
+
+        daily: dict[str, dict[str, Any]] = {
+            str(row["day"]): {
+                "date": str(row["day"]),
+                "tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cached_tokens": 0,
+                "sessions": 0,
+                "longest_session_ms": 0,
+            }
+            for row in run_rows
+        }
+        models: dict[str, dict[str, Any]] = {}
+        for row in usage_rows:
+            day = str(row["day"])
+            item = daily.setdefault(day, {
+                "date": day, "tokens": 0, "input_tokens": 0, "output_tokens": 0,
+                "cached_tokens": 0, "sessions": 0, "longest_session_ms": 0,
+            })
+            model = str(row["model"])
+            input_tokens = int(row["input_tokens"] or 0)
+            output_tokens = int(row["output_tokens"] or 0)
+            cached_tokens = int(row["cached_tokens"] or 0)
+            item["input_tokens"] += input_tokens
+            item["output_tokens"] += output_tokens
+            item["cached_tokens"] += cached_tokens
+            item["tokens"] += input_tokens + output_tokens
+            aggregate = models.setdefault(model, {
+                "model": model, "input_tokens": 0, "output_tokens": 0,
+                "cached_tokens": 0, "tokens": 0,
+            })
+            aggregate["input_tokens"] += input_tokens
+            aggregate["output_tokens"] += output_tokens
+            aggregate["cached_tokens"] += cached_tokens
+            aggregate["tokens"] += input_tokens + output_tokens
+
+        for row in run_rows:
+            item = daily[str(row["day"])]
+            item["sessions"] = int(row["sessions"] or 0)
+            item["longest_session_ms"] = int(row["longest_session_ms"] or 0)
+
+        day_items = sorted(daily.values(), key=lambda item: item["date"])
+        active_dates = [datetime.strptime(item["date"], "%Y-%m-%d").date() for item in day_items if item["sessions"]]
+        active_set = set(active_dates)
+        current_streak = 0
+        cursor = datetime.now(timezone.utc).date()
+        while cursor in active_set:
+            current_streak += 1
+            cursor -= timedelta(days=1)
+        longest_streak = 0
+        streak = 0
+        previous = None
+        for day in active_dates:
+            streak = streak + 1 if previous and day - previous == timedelta(days=1) else 1
+            longest_streak = max(longest_streak, streak)
+            previous = day
+        total_tokens = sum(item["tokens"] for item in day_items)
+        total_sessions = sum(item["sessions"] for item in day_items)
+        most_active = max(day_items, key=lambda item: (item["tokens"], item["sessions"]), default=None)
+        longest_session = max((item["longest_session_ms"] for item in day_items), default=0)
+        model_items = sorted(models.values(), key=lambda item: item["tokens"], reverse=True)
+
+        return {
+            "range": date_range,
+            "overview": {
+                "total_tokens": total_tokens,
+                "total_sessions": total_sessions,
+                "active_days": len(active_dates),
+                "longest_session_ms": longest_session,
+                "longest_streak": longest_streak,
+                "current_streak": current_streak,
+                "most_active_day": most_active["date"] if most_active else None,
+                "favorite_model": model_items[0]["model"] if model_items else None,
+            },
+            "daily": day_items,
+            "models": model_items,
+        }
 
     @staticmethod
     def _decode_action(row: sqlite3.Row) -> dict[str, Any]:

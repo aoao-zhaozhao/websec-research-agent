@@ -8,6 +8,8 @@
 >
 > **v1.6** 新增案例记忆库、递归增量 RAG 索引和 `case_create`；DeepSeek curator 审查 agent-created Skill 的语义重复性；Skill 创建需要至少两条同类案例支持，避免“一题一 Skill”的知识库膨胀。
 >
+> **v1.7.5** 新增 Claude 风格用量统计页：按全部时间、近 7 天或近 30 天汇总本地遥测，提供年度活跃热力图、连续活跃、最长运行、常用模型和逐日 token 趋势；模型明细展示输入、输出与缓存 token。历史统计从 `telemetry.db` 中已有的运行记录开始累计，旧会话无法补全 token 用量。
+>
 > **v1.7.4** 新增 DeepSeek 上下文缓存观测：将 `prompt_cache_hit_tokens` 及 LangChain 归一化的 `input_token_details.cache_read` 持久化为缓存命中 token；指标工作台按输入 token 加权显示缓存命中率，并自动回填已有遥测记录。
 >
 > **v1.7.3** 新增认证会话与 JWT 验证闭环：登录重定向、Cookie 和 JWT 保存在内存 `session_ref` 中，Agent 只接收脱敏元数据；Benchmark 模式可验证弱签名造成的权限风险。案例写入新增运行时证据门与指纹去重，未验证扫描不会进入 RAG 或 Skill 晋升。
@@ -67,9 +69,9 @@ my-agent/
 │   │   └── css_injection/      #   种子技能: css-exfil-otp
 │   └── models/                 # 本地模型 (.gitignore 排除)
 ├── server/
-│   └── web_server.py           # FastAPI 服务器 (WebSocket + REST + 指标 API)
+│   └── web_server.py           # FastAPI 服务器 (WebSocket + REST + 指标与用量 API)
 ├── web/
-│   └── index.html              # 浏览器工作台 (工具目录、运行指标与历史运行)
+│   └── index.html              # 浏览器工作台 (工具目录、用量统计、运行指标与历史运行)
 └── test_client.py              # 命令行交互客户端（可选）
 ```
 
@@ -392,7 +394,13 @@ Agent 覆盖 10 大攻击类别，45 个工具自动协作：
 - `skill_create` 强制要求至少两条同分类且标签重叠的独立案例，阻止单题经验污染 Skill 库
 - 新增 `/api/skills`，工具目录动态展示已学习 Skill；基础工具总数为 39
 
-### v1.7.4 — DeepSeek 缓存命中率（当前）
+### v1.7.5 — 用量统计页（当前）
+
+- 新增 `/api/usage-stats`：按全部时间、近 7 天或近 30 天聚合 `telemetry_runs` 与 `telemetry_model_usage`。
+- 工作台新增概览和模型视图：年度活跃热力图、活跃天数、连续活跃、最长运行、常用模型、逐日 token 趋势及模型输入/输出/缓存明细。
+- 日期热力图按本地日期渲染，覆盖当前周；历史数据仅来自已持久化的 `telemetry.db`，不会从旧会话推测 token。
+
+### v1.7.4 — DeepSeek 缓存命中率
 
 - 兼容 DeepSeek 原始 `prompt_cache_hit_tokens` 和 LangChain 归一化的 `input_token_details.cache_read`。
 - `telemetry_model_usage` 持久化缓存命中 token；启动时从历史 `raw_usage` 幂等回填此前遗漏的缓存读数。

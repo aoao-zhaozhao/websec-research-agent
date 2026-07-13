@@ -7,7 +7,8 @@
 > **v1.5** 新增代码驱动的技能遥测、确定性生命周期、durable review job、lease/retry worker 和持久化维护指令，形成最小完整自进化闭环。
 >
 > **v1.6** 新增案例记忆库、递归增量 RAG 索引和 `case_create`；DeepSeek curator 审查 agent-created Skill 的语义重复性；Skill 创建需要至少两条同类案例支持，避免“一题一 Skill”的知识库膨胀。
-> **v1.7.3** 新增认证会话与 JWT 验证闭环：登录重定向、Cookie 和 JWT 保存在内存 `session_ref` 中，Agent 只接收脱敏元数据；Benchmark 模式可验证弱签名造成的权限风险。
+>
+> **v1.7.3** 新增认证会话与 JWT 验证闭环：登录重定向、Cookie 和 JWT 保存在内存 `session_ref` 中，Agent 只接收脱敏元数据；Benchmark 模式可验证弱签名造成的权限风险。案例写入新增运行时证据门与指纹去重，未验证扫描不会进入 RAG 或 Skill 晋升。
 >
 ## 项目结构
 
@@ -276,7 +277,7 @@ Agent 覆盖 10 大攻击类别，45 个工具自动协作：
 
 > `/api/tools` 暴露 **45 个基础工具**；RAG 初始化成功时，Agent 运行时还会动态加入 `search_knowledge`。工具目录会通过 `/api/skills` 显示已学习 Skill，不再把案例混入工具列表。
 
-案例保存于 `agent/knowledge/cases/`，与 OWASP/CVE 文档一起由 Chroma + Qwen3 两阶段检索；案例包含前提、证据、解决链和失败路径，但不得包含 flag、凭据或 token。技能内容保存在 `agent/skills/`，可变遥测与生命周期状态保存在 `data/evolution.db`。业务工具每完成 10 次会持久化一个幂等 `skill_review` job；带 lease/retry 的 worker 自动审查结构化工具结果。DeepSeek curator 仅合并高置信重复的 agent-created Skill，且归档可恢复。`bundled`、已 pin 或被保护引用的技能不会被自动归档。
+案例保存于 `agent/knowledge/cases/`，与 OWASP/CVE 文档一起由 Chroma + Qwen3 两阶段检索；案例包含前提、证据、解决链和失败路径，但不得包含 flag、凭据或 token。`case_create` 仅在本次运行有 confirmed 工具发现或 Benchmark 验证成功时可写入，并记录证据引用与去重指纹；未验证案例即使保留在磁盘也不会被 RAG 索引或参与 Skill 晋升。技能内容保存在 `agent/skills/`，可变遥测与生命周期状态保存在 `data/evolution.db`。业务工具每完成 10 次会持久化一个幂等 `skill_review` job；带 lease/retry 的 worker 自动审查结构化工具结果。DeepSeek curator 仅合并高置信重复的 agent-created Skill，且归档可恢复。`bundled`、已 pin 或被保护引用的技能不会被自动归档。
 
 ## 架构
 
@@ -393,6 +394,7 @@ Agent 覆盖 10 大攻击类别，45 个工具自动协作：
 
 - `auth_login` 保留登录重定向和 Cookie 于内存会话，使用 `session_ref` 关联后续检查，不写入 token 或密码。
 - `session_jwt_review`、`session_jwt_hmac_check` 分析 JWT 元数据与固定弱密钥；仅 Benchmark 模式允许权限差异验证。
+- `case_create` 由运行时证据门控制：只接受 confirmed 工具结果或成功的 Benchmark 验证；同一证据指纹复用已有案例，未验证案例不会被 RAG 索引。
 
 ### v1.7.2 — 大响应定向检索
 

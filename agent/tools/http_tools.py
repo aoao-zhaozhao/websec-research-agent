@@ -2,9 +2,12 @@
 HTTP 基础工具: GET / POST / 受约束的通用请求。
 
 v0.5: 从 agent/core.py 拆分，无功能变更。
+v1.8: HTTP 请求后自动写入流量证据存储。
 """
 
 import json
+import threading
+from typing import Any
 
 import urllib3
 from langchain_core.tools import tool
@@ -15,6 +18,43 @@ from .results import RequestRecord, ToolResult, error_result, response_record
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 ALLOWED_HTTP_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "HEAD", "OPTIONS"})
+
+# v1.8: 流量捕获引用（模块级，由 Agent 注入）
+_traffic_capture: Any = None
+_capture_lock = threading.Lock()
+
+
+def set_traffic_capture_for_tools(capture: Any) -> None:
+    """注入流量捕获实例，供 HTTP 工具自动记录请求。"""
+    global _traffic_capture
+    with _capture_lock:
+        _traffic_capture = capture
+
+
+def _record_traffic(method: str, url: str, req_headers: dict, req_body: str | None,
+                    status: int, resp_headers: dict, resp_body: bytes) -> None:
+    """将 HTTP 交换写入流量证据存储（静默失败）。"""
+    capture = None
+    with _capture_lock:
+        capture = _traffic_capture
+    if capture is None:
+        return
+    try:
+        from agent.traffic.models import (
+            CapturedRequest, CapturedResponse, CapturedExchange, SOURCE_AGENT,
+        )
+        req = CapturedRequest(
+            method=method, url=url, headers=dict(req_headers),
+            body=(req_body or "").encode("utf-8", "replace"),
+        )
+        resp = CapturedResponse(
+            status=status, headers=dict(resp_headers),
+            body=resp_body if isinstance(resp_body, bytes) else b"",
+        )
+        exchange = CapturedExchange(request=req, response=resp)
+        capture.capture(exchange, source=SOURCE_AGENT, tags=["http_tool"])
+    except Exception:
+        pass  # 流量捕获失败不影响扫描
 
 
 @tool
@@ -29,6 +69,8 @@ def http_get(url: str) -> str:
     """
     try:
         r = get(url)
+        _record_traffic("GET", url, {}, None,
+                        r.status_code, dict(r.headers), getattr(r, "content", b""))
         headers_str = "\n".join(f"  {k}: {v}" for k, v in r.headers.items())
         readable = (
             f"[GET] {url}\n"
@@ -59,6 +101,8 @@ def http_post(url: str, data: str = "", content_type: str = "application/x-www-f
     try:
         headers = {"Content-Type": content_type}
         r = post(url, data=data, headers=headers)
+        _record_traffic("POST", url, headers, data,
+                        r.status_code, dict(r.headers), getattr(r, "content", b""))
         readable = (
             f"[POST] {url}\n"
             f"Payload: {data[:500]}\n"
@@ -120,6 +164,9 @@ def http_request(
             data=data or None,
             headers=headers or None,
         )
+        _record_traffic(normalized_method, url, headers, data,
+                        response.status_code, dict(response.headers),
+                        getattr(response, "content", b""))
         headers_str = "\n".join(f"  {key}: {value}" for key, value in response.headers.items())
         readable = (
             f"[{normalized_method}] {url}\n"

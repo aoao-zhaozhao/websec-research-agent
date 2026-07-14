@@ -243,6 +243,22 @@
   }
   .scan-stat strong { display: block; font-size: 16px; line-height: 1.15; }
   .scan-stat span { display: block; color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .live-monitor { border: 1px solid var(--line); background: #121512; }
+  .live-monitor.is-live { border-color: #466649; }
+  .live-monitor-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border-bottom: 1px solid var(--line); }
+  .live-monitor-state { color: var(--muted); font-size: 11px; }
+  .live-monitor.is-live .live-monitor-state { color: var(--green); }
+  .live-monitor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .live-metric { min-width: 0; padding: 9px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .live-metric:nth-child(2n) { border-right: 0; }
+  .live-metric:nth-last-child(-n + 2) { border-bottom: 0; }
+  .live-metric-label { color: var(--muted); font-size: 10px; }
+  .live-metric-value { margin-top: 4px; color: var(--text); font: 700 14px "JetBrains Mono", "Cascadia Code", Consolas, monospace; overflow-wrap: anywhere; }
+  .live-metric-value.good { color: var(--green); }
+  .live-metric-value.warning { color: var(--amber); }
+  .live-spark { height: 24px; margin: 9px 9px 8px; display: flex; align-items: end; gap: 2px; }
+  .live-spark span { flex: 1; min-width: 2px; height: var(--height); background: var(--green); opacity: .3; }
+  .live-spark span:last-child { opacity: 1; }
   .scan-target {
     color: var(--soft);
     font: 12px "JetBrains Mono", "Cascadia Code", Consolas, monospace;
@@ -753,6 +769,10 @@
           <div id="scanStateRail" class="empty">等待扫描任务。</div>
         </section>
         <section class="rail-section">
+          <h2>实时监控</h2>
+          <div id="liveMonitorRail" class="empty">开始扫描后显示实时 token、工具与缓存指标。</div>
+        </section>
+        <section class="rail-section">
           <h2>漏洞证据</h2>
           <div id="findingRail" class="empty">等待结构化发现。</div>
         </section>
@@ -917,6 +937,8 @@ let currentReasoning = null;
 let currentReasoningRaw = '';
 let toolCards = new Map();
 let toolInventory = null;  // cached from /api/tools
+let liveMetrics = null;
+let liveMonitorTimer = null;
 
 const conversation = document.getElementById('conversation');
 const sessionsEl = document.getElementById('sessions');
@@ -936,6 +958,7 @@ const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const scanElapsed = document.getElementById('scanElapsed');
 const scanStateRail = document.getElementById('scanStateRail');
+const liveMonitorRail = document.getElementById('liveMonitorRail');
 const configDialog = document.getElementById('configDialog');
 const configForm = document.getElementById('configForm');
 const closeConfigBtn = document.getElementById('closeConfigBtn');
@@ -1307,6 +1330,12 @@ function formatPayload(value) {
 }
 
 function onToolStart(msg) {
+  if (liveMetrics) {
+    const now = Date.now();
+    liveMetrics.toolStarts.push(now);
+    if (['http_get', 'http_post', 'http_request'].includes(msg.name)) liveMetrics.requestStarts.push(now);
+    renderLiveMonitor();
+  }
   if (toolRail.classList.contains('empty')) {
     toolRail.className = '';
     toolRail.innerHTML = '';
@@ -1328,6 +1357,11 @@ function onToolStart(msg) {
 }
 
 function onToolEnd(msg) {
+  if (liveMetrics) {
+    liveMetrics.completedTools += 1;
+    if (msg.protocol_error || ['error', 'protocol_error'].includes(msg.result?.status)) liveMetrics.failedTools += 1;
+    renderLiveMonitor();
+  }
   const id = msg.id;
   const sessionTool = activeSession().tools.find(tool => tool.id === id);
   if (sessionTool) {
@@ -1386,6 +1420,84 @@ function formatDuration(milliseconds) {
   const seconds = Math.max(0, Math.floor((milliseconds || 0) / 1000));
   const minutes = Math.floor(seconds / 60);
   return minutes ? `${minutes}m ${String(seconds % 60).padStart(2, '0')}s` : `${seconds}s`;
+}
+
+function createLiveMetrics() {
+  return {
+    active: true,
+    startedAt: Date.now(),
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    toolStarts: [],
+    requestStarts: [],
+    completedTools: 0,
+    failedTools: 0,
+    usageSamples: []
+  };
+}
+
+function formatLiveRate(value) {
+  if (!Number.isFinite(value) || value <= 0) return '--';
+  return `${formatCompactTokens(value)}/s`;
+}
+
+function renderLiveMonitor() {
+  if (!liveMetrics) {
+    liveMonitorRail.className = 'empty';
+    liveMonitorRail.textContent = '开始扫描后显示实时 token、工具与缓存指标。';
+    return;
+  }
+  const now = Date.now();
+  const usageSamples = liveMetrics.usageSamples.filter(sample => now - sample.at <= 30000);
+  const totalUsageDuration = usageSamples.reduce((sum, sample) => sum + Math.max(0, sample.durationMs || 0), 0);
+  const tokenRate = totalUsageDuration
+    ? usageSamples.reduce((sum, sample) => sum + sample.tokens, 0) / (totalUsageDuration / 1000)
+    : null;
+  const recentToolStarts = liveMetrics.toolStarts.filter(at => now - at <= 60000);
+  const recentRequests = liveMetrics.requestStarts.filter(at => now - at <= 60000);
+  liveMetrics.toolStarts = recentToolStarts;
+  liveMetrics.requestStarts = recentRequests;
+  liveMetrics.usageSamples = usageSamples;
+  const completed = liveMetrics.completedTools;
+  const successRate = completed ? (completed - liveMetrics.failedTools) / completed : null;
+  const errorRate = completed ? liveMetrics.failedTools / completed : null;
+  const cacheRate = liveMetrics.inputTokens ? liveMetrics.cachedTokens / liveMetrics.inputTokens : null;
+  const sparkValues = usageSamples.slice(-20).map(sample => sample.tokens);
+  const sparkMax = Math.max(...sparkValues, 1);
+  const spark = sparkValues.length
+    ? sparkValues.map(value => `<span style="--height:${Math.max(12, Math.round(value / sparkMax * 100))}%"></span>`).join('')
+    : '<span style="--height:12%"></span>';
+  const metric = (label, value, tone = '') => `<div class="live-metric"><div class="live-metric-label">${label}</div><div class="live-metric-value ${tone}">${value}</div></div>`;
+  liveMonitorRail.className = `live-monitor${liveMetrics.active ? ' is-live' : ''}`;
+  liveMonitorRail.innerHTML = `
+    <div class="live-monitor-head"><strong>Live monitor</strong><span class="live-monitor-state">${liveMetrics.active ? '采集中' : '已结束'}</span></div>
+    <div class="live-monitor-grid">
+      ${metric('Token 速率', formatLiveRate(tokenRate), 'good')}
+      ${metric('HTTP 请求（60 秒）', String(recentRequests.length))}
+      ${metric('工具成功率', formatRate(successRate), successRate != null && successRate < .9 ? 'warning' : 'good')}
+      ${metric('工具错误率', formatRate(errorRate), errorRate ? 'warning' : '')}
+      ${metric('缓存命中', formatRate(cacheRate), 'good')}
+      ${metric('输入 / 输出', `${formatCompactTokens(liveMetrics.inputTokens)} / ${formatCompactTokens(liveMetrics.outputTokens)}`)}
+    </div>
+    <div class="live-spark" title="最近 30 秒模型调用 token 分布">${spark}</div>
+  `;
+}
+
+function onModelUsage(msg) {
+  if (!liveMetrics) return;
+  const inputTokens = Number(msg.input_tokens || 0);
+  const outputTokens = Number(msg.output_tokens || 0);
+  const cachedTokens = Number(msg.cached_tokens || 0);
+  liveMetrics.inputTokens += inputTokens;
+  liveMetrics.outputTokens += outputTokens;
+  liveMetrics.cachedTokens += cachedTokens;
+  liveMetrics.usageSamples.push({
+    at: Date.now(),
+    tokens: inputTokens + outputTokens,
+    durationMs: Number(msg.duration_ms || 0)
+  });
+  renderLiveMonitor();
 }
 
 function renderCaseMemory() {
@@ -1732,6 +1844,10 @@ function applyScanSnapshot(snapshot) {
 }
 
 function onScanStarted(msg) {
+  liveMetrics = createLiveMetrics();
+  if (liveMonitorTimer) clearInterval(liveMonitorTimer);
+  liveMonitorTimer = setInterval(renderLiveMonitor, 1000);
+  renderLiveMonitor();
   const session = activeSession();
   session.tools = [];
   session.scan = { ...(msg.scan || {}), findings: [] };
@@ -1771,6 +1887,12 @@ function onFindingCreated(msg) {
 
 function onScanFinished(msg) {
   const scan = applyScanSnapshot(msg.scan);
+  if (liveMetrics) {
+    liveMetrics.active = false;
+    if (liveMonitorTimer) clearInterval(liveMonitorTimer);
+    liveMonitorTimer = null;
+    renderLiveMonitor();
+  }
   if (scan?.status === 'stopped') markRunningToolsStopped();
   saveSessions();
   if (metricsOverlay.classList.contains('open')) refreshTelemetry();
@@ -1860,6 +1982,8 @@ function connect() {
       currentAssistantRaw += msg.content || '';
       currentAssistant.innerHTML = renderMarkdown(currentAssistantRaw);
       conversation.scrollTop = conversation.scrollHeight;
+      } else if (msg.type === 'model_usage') {
+        onModelUsage(msg);
       } else if (msg.type === 'tool_started') {
         onToolStart(msg);
       } else if (msg.type === 'tool_finished') {
@@ -1885,6 +2009,12 @@ function connect() {
         currentAssistantRaw = '';
         resetReasoning();
         setBusy(false);
+        if (liveMetrics) {
+          liveMetrics.active = false;
+          if (liveMonitorTimer) clearInterval(liveMonitorTimer);
+          liveMonitorTimer = null;
+          renderLiveMonitor();
+        }
       saveSessions();
         addMessage('assistant', msg.content || '扫描已停止');
       input.focus();
@@ -1900,6 +2030,12 @@ function connect() {
         resetReasoning();
         addMessage('assistant', `错误：${msg.content || 'unknown error'}`);
         setBusy(false);
+        if (liveMetrics) {
+          liveMetrics.active = false;
+          if (liveMonitorTimer) clearInterval(liveMonitorTimer);
+          liveMonitorTimer = null;
+          renderLiveMonitor();
+        }
     }
   };
 }

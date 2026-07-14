@@ -104,3 +104,81 @@ class AgentConfig:
     # ── RAG 检索参数 ──
     rag_top_k: int = 4                # 最终返回条数
     rag_candidate_multiplier: int = 3 # 初检 top_k × N → reranker 精排
+
+    # ── MCP 可插拔工具链 (v1.8) ──
+    mcp: "MCPConfig" = field(default_factory=lambda: MCPConfig())
+    evidence_dir: str = field(
+        default_factory=lambda: os.getenv(
+            "EVIDENCE_DIR",
+            os.path.join(os.path.dirname(__file__), "..", "evidence"),
+        )
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MCP 配置模型 (v1.8)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class MCPTransportConfig:
+    """MCP 传输层配置"""
+    type: str = "local"             # local / stdio / sse / streamable-http
+    command: str | None = None      # stdio 模式的启动命令
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] | None = None
+    url: str | None = None          # sse / streamable-http 的 URL
+
+
+@dataclass
+class MCPServerConfig:
+    """单个 MCP 服务配置"""
+    name: str = ""
+    enabled: bool = False
+    priority: int = 1               # 0=关键, 1=普通, 2=可选
+    description: str = ""
+    transport: MCPTransportConfig = field(default_factory=MCPTransportConfig)
+    startup_timeout_ms: int = 30000
+    tool_timeout_ms: int = 300000
+
+
+@dataclass
+class MCPConfig:
+    """MCP 服务集合配置，默认注册 4 个服务（仅 fetch/memory 默认启用）。"""
+    servers: dict[str, MCPServerConfig] = field(default_factory=lambda: {
+        "fetch": MCPServerConfig(
+            name="fetch",
+            enabled=True,
+            priority=0,
+            description="本地 HTTP 请求（httpx）",
+            transport=MCPTransportConfig(type="local"),
+        ),
+        "memory": MCPServerConfig(
+            name="memory",
+            enabled=True,
+            priority=1,
+            description="跨会话记忆持久化（JSON）",
+            transport=MCPTransportConfig(type="local"),
+        ),
+        "chrome-devtools": MCPServerConfig(
+            name="chrome-devtools",
+            enabled=False,
+            priority=1,
+            description="Chrome 浏览器自动化（stdio MCP）",
+            transport=MCPTransportConfig(
+                type="stdio",
+                command="npx",
+                args=["-y", "chrome-devtools-mcp@latest"],
+            ),
+            startup_timeout_ms=60000,
+        ),
+        "burp": MCPServerConfig(
+            name="burp",
+            enabled=False,
+            priority=0,
+            description="Burp Suite 代理集成（SSE MCP）",
+            transport=MCPTransportConfig(
+                type="sse",
+                url="http://127.0.0.1:9876",
+            ),
+        ),
+    })

@@ -27,8 +27,9 @@ APP_VERSION = "1.7.5"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Start a lightweight durable worker for review jobs and expired leases."""
+    """Start durable workers for evolution, MCP lifecycle, and review jobs."""
     from agent.evolution import get_evolution_worker
+    from agent.mcp.lifecycle import MCPLifecycleManager
 
     worker = get_evolution_worker()
 
@@ -39,6 +40,12 @@ async def lifespan(_app: FastAPI):
 
     await asyncio.to_thread(worker.run_until_idle)
     worker_task = asyncio.create_task(worker_loop())
+
+    # v1.8: 初始化 MCP 生命周期管理器
+    mcp_manager = MCPLifecycleManager(agent_config.mcp.servers)
+    mcp_manager.start_enabled_servers()
+    _app.state.mcp_manager = mcp_manager
+
     try:
         yield
     finally:
@@ -47,6 +54,7 @@ async def lifespan(_app: FastAPI):
             await worker_task
         except asyncio.CancelledError:
             pass
+        await mcp_manager.astop_all()
 
 
 app = FastAPI(title="Web Security Scanner", version=APP_VERSION, lifespan=lifespan)
@@ -265,7 +273,8 @@ async def get_tools():
     # Sort categories and tools within each category
     category_order = [
         "HTTP 基础", "攻击面测绘", "注入验证", "SSRF 检测",
-        "JWT 攻击", "授权攻击", "OOB 外带确认", "高级利用", "自进化技能",
+        "JWT 攻击", "授权攻击", "OOB 外带确认", "高级利用",
+        "自进化技能", "流量取证", "MCP 外部工具",
     ]
     result = []
     for cat in category_order:
@@ -300,7 +309,7 @@ def _categorize_tool(name: str, desc: str) -> str:
         return "注入验证"
     if any(kw in name for kw in ("test_ssrf", "probe_internal_port")):
         return "SSRF 检测"
-    if any(kw in name for kw in ("jwt_alg", "jwt_hmac", "jwt_key", "session_jwt")):
+    if any(kw in name for kw in ("jwt_alg", "jwt_hmac", "jwt_key", "session_jwt", "session_response_search")):
         return "JWT 攻击"
     if any(kw in name for kw in ("test_idor", "test_privilege", "test_role_manipulation")):
         return "授权攻击"
@@ -310,7 +319,184 @@ def _categorize_tool(name: str, desc: str) -> str:
         return "高级利用"
     if any(kw in name for kw in ("skill_", "case_create", "scan_reflect")):
         return "自进化技能"
+    if any(kw in name for kw in ("traffic_list", "traffic_view", "traffic_repeat", "traffic_sitemap")):
+        return "流量取证"
     return "其他"
+
+
+# ═══════════════════════════════════════════════════════════════
+# MCP 诊断 API (v1.8)
+# ═══════════════════════════════════════════════════════════════
+
+def _get_mcp_diagnostics() -> dict:
+    """获取 MCP 诊断信息的内部函数，供各端点复用。"""
+    from agent.mcp.schemas import MCPDiagnosticsView, MCPServiceView
+
+    services: list[MCPServiceView] = []
+    local_count = 0
+    placeholder_count = 0
+    running_count = 0
+    total_tool_count = 0
+
+    for name, server_config in agent_config.mcp.servers.items():
+        transport = server_config.transport
+        transport_type = transport.type or "unknown"
+        can_execute = transport_type in ("local", "sdk", "subprocess", "sse")
+
+        # 对齐计划: 本地服务算 running
+        is_running = transport_type == "local" or transport_type == "sdk"
+
+        if transport_type == "local":
+            local_count += 1
+        elif transport_type == "placeholder":
+            placeholder_count += 1
+
+        if is_running:
+            running_count += 1
+
+        tools: list[str] = []
+        if name == "fetch":
+            tools = ["fetch"]
+        elif name == "memory":
+            tools = ["save", "retrieve"]
+        elif name == "chrome-devtools":
+            tools = [
+                "chrome_navigate", "chrome_read_page", "chrome_screenshot",
+                "chrome_javascript", "chrome_get_web_content", "chrome_console",
+                "chrome_network_request", "chrome_click_element", "chrome_fill_or_select",
+                "chrome_pentest_http", "chrome_pentest_js_analyze",
+                "chrome_pentest_cookies", "chrome_pentest_headers",
+            ]
+        elif name == "burp":
+            tools = ["send_http1_request", "get_proxy_http_history"]
+
+        tool_count = len(tools)
+        total_tool_count += tool_count
+
+        services.append(MCPServiceView(
+            name=name,
+            enabled=server_config.enabled,
+            priority=server_config.priority,
+            transport_type=transport_type,
+            execution_mode=transport_type if transport_type == "local" else "placeholder",
+            health_status="healthy" if server_config.enabled else "unknown",
+            attach_attempted=server_config.enabled,
+            attach_succeeded=transport_type == "local",
+            running=is_running,
+            can_execute=can_execute,
+            tool_count=tool_count,
+            tools=tools,
+            error=None,
+            description=server_config.description or "",
+        ))
+
+    diag = MCPDiagnosticsView(
+        total_services=len(services),
+        running_services=running_count,
+        local_services=local_count,
+        placeholder_services=placeholder_count,
+        tool_count=total_tool_count,
+        services=services,
+    )
+    return diag.to_dict()
+
+
+@app.get("/api/mcp/diagnostics")
+async def get_mcp_diagnostics():
+    """MCP 服务状态诊断。"""
+    return _get_mcp_diagnostics()
+
+
+@app.get("/api/mcp/tools")
+async def get_mcp_tools():
+    """所有 MCP 工具列表（含服务归属）。"""
+    from agent.config import MCPConfig
+    tools: list[dict] = []
+    for name, server_config in agent_config.mcp.servers.items():
+        if not server_config.enabled:
+            continue
+        # 静态已知工具表
+        known = {
+            "fetch": [{"name": "fetch", "description": "Fetch a URL and return the content"}],
+            "memory": [
+                {"name": "save", "description": "Save information to persistent memory"},
+                {"name": "retrieve", "description": "Retrieve information from persistent memory"},
+            ],
+        }
+        for tool in known.get(name, []):
+            tools.append({**tool, "server": name})
+    return {"servers": list(agent_config.mcp.servers.keys()), "tools": tools}
+
+
+# ═══════════════════════════════════════════════════════════════
+# 流量证据 API (v1.8)
+# ═══════════════════════════════════════════════════════════════
+
+def _get_traffic_store():
+    """获取流量存储实例（如已初始化）。"""
+    try:
+        from agent.tools.traffic_tools import _get_store
+        return _get_store()
+    except Exception:
+        return None
+
+
+@app.get("/api/traffic")
+async def get_traffic_list(
+    method: str = "",
+    host: str = "",
+    status: int = 0,
+    source: str = "",
+    limit: int = 50,
+):
+    """流量列表查询。"""
+    store = _get_traffic_store()
+    if store is None:
+        return {"entries": [], "note": "流量存储未初始化，请先开始扫描。"}
+
+    try:
+        entries = store.entries()
+    except Exception:
+        return {"entries": []}
+
+    filtered = []
+    for entry in entries:
+        if method and entry.get("method", "").upper() != method.upper():
+            continue
+        if host and host.lower() not in (entry.get("host", "") or "").lower():
+            continue
+        if status and entry.get("status", 0) != status:
+            continue
+        if source and entry.get("source", "") != source:
+            continue
+        filtered.append(entry)
+
+    filtered = filtered[-limit:]
+    return {"total": len(entries), "filtered": len(filtered), "entries": filtered}
+
+
+@app.get("/api/traffic/{request_id}")
+async def get_traffic_detail(request_id: str):
+    """查看单个流量详情（请求+响应）。"""
+    store = _get_traffic_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="流量存储未初始化")
+
+    view = store.view(request_id)
+    if view is None:
+        raise HTTPException(status_code=404, detail=f"未找到: {request_id}")
+
+    return {
+        "request_id": request_id,
+        "method": view.get("method"),
+        "url": view.get("url"),
+        "host": view.get("host"),
+        "status": view.get("status"),
+        "source": view.get("source"),
+        "timestamp": view.get("timestamp"),
+        "request_text": view.get("request_text", ""),
+        "response_text": view.get("response_text", ""),
+    }
 
 
 @app.websocket("/api/chat")
@@ -400,6 +586,10 @@ async def chat(ws: WebSocket):
                 agent = Agent(agent_config, telemetry=telemetry_store)
                 agent.restore_history(conversation["messages"])
                 conversation_id = requested_conversation_id
+                # v1.8: 注入 MCP 工具链
+                _mcp = getattr(app.state, "mcp_manager", None)
+                if _mcp is not None:
+                    agent.set_mcp_lifecycle(_mcp)
             scan_task = asyncio.create_task(run_scan(user_input, mode, category, requested_conversation_id))
 
     except WebSocketDisconnect:

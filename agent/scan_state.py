@@ -44,9 +44,19 @@ TOOL_STAGES = {
     "jwt_alg_none_attack": "verify",
     "jwt_hmac_brute": "verify",
     "jwt_key_confusion": "verify",
+    "auth_login": "verify",
+    "session_jwt_review": "verify",
+    "session_jwt_hmac_check": "verify",
+    "session_jwt_privilege_check": "verify",
+    "session_response_search": "verify",
     "generate_oob_payload": "verify",
     "check_oob_callbacks": "verify",
     "search_knowledge": "knowledge",
+    # v1.8: 流量取证工具
+    "traffic_list": "enumerate",
+    "traffic_view": "enumerate",
+    "traffic_repeat": "verify",
+    "traffic_sitemap": "enumerate",
 }
 
 

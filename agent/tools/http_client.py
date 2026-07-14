@@ -24,11 +24,15 @@ DEFAULT_USER_AGENT = os.getenv(
     "SCAN_USER_AGENT",
     "MyAgent-WebSecurityScanner/0.6 (+authorized security testing)",
 )
+DEFAULT_PROXY = os.getenv("SCAN_PROXY", "")
 
 _session = requests.Session()
 _session.headers.update({"User-Agent": DEFAULT_USER_AGENT})
+if DEFAULT_PROXY:
+    _session.proxies = {"http": DEFAULT_PROXY, "https": DEFAULT_PROXY}
 _last_request_at: dict[str, float] = {}
 _rate_lock = threading.Lock()
+_proxy_lock = threading.Lock()
 
 
 @dataclass
@@ -116,6 +120,25 @@ def request(method: str, url: str, **kwargs) -> requests.Response:
     if last_exc:
         raise last_exc
     raise RuntimeError("request failed without an exception")
+
+
+def set_proxy(proxy_url: str | None) -> None:
+    """动态设置/取消 HTTP 代理（v1.8 mitmproxy 集成）。
+
+    传空字符串或 None 取消代理。
+    线程安全。
+    """
+    with _proxy_lock:
+        if proxy_url:
+            _session.proxies = {"http": proxy_url, "https": proxy_url}
+        else:
+            _session.proxies = {}
+
+
+def get_proxy() -> str | None:
+    """获取当前代理 URL，无代理时返回 None。"""
+    proxies = _session.proxies
+    return proxies.get("http") or proxies.get("https") or None
 
 
 def get(url: str, **kwargs) -> requests.Response:

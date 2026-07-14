@@ -185,3 +185,31 @@ parameter, and response facts rather than only the target URL.
 """
 
 SYSTEM_PROMPT += CASE_MEMORY_POLICY
+
+JWT_SESSION_POLICY = """
+## Authoritative JWT Session Policy
+
+For login/JWT tasks, use only auth_login, session_jwt_review,
+session_jwt_hmac_check, session_jwt_privilege_check, and
+session_response_search. The legacy jwt_alg_none_attack, jwt_hmac_brute, and
+jwt_key_confusion tools are intentionally unavailable and must never be
+described as executed.
+
+In benchmark mode, call session_jwt_privilege_check before claiming a privilege
+escalation. It is verified only when it reports validated=true after comparing
+the original access-denied response with the forged-session response. After a
+verified result, call session_response_search on the same path with the required
+flag pattern. Do not claim that a flag was recovered unless that search reports
+a non-zero match_count. If validation or search is inconclusive, report the
+attempt as unresolved and do not create a case.
+
+Credential rule: when the user prompt or a discovered challenge page provides a
+username and password, call auth_login exactly once with those values before
+any http_post, credential guessing, injection probe, or unrelated path search.
+Never brute-force or guess credentials. If no credentials are provided and a
+login is required, report that boundary rather than guessing. In a benchmark
+CTF whose goal is a flag, stop unrelated probing after the authenticated JWT
+path is verified and search the verified session response instead.
+"""
+
+SYSTEM_PROMPT += JWT_SESSION_POLICY

@@ -9,8 +9,10 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
+import requests
+
 from agent.tools import BASE_TOOLS
-from agent.tools.auth_session_tools import reset_auth_session_mode, set_auth_session_mode
+from agent.tools.auth_session_tools import _denied_response, reset_auth_session_mode, set_auth_session_mode
 from agent.tools.results import parse_tool_result
 
 
@@ -43,14 +45,22 @@ class _AuthHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):  # noqa: N802
-        if self.path != "/home":
+        if self.path not in {"/home", "/soft-home"}:
             self.send_response(404)
             self.end_headers()
+            return
+        if self.path == "/soft-home":
+            body = b"Login to access to home page"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         token = next((part[6:] for part in self.headers.get("Cookie", "").split("; ") if part.startswith("token=")), "")
         payload = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "==")) if token.count(".") == 2 else {}
         if payload.get("sub", {}).get("admin") is True:
-            body = b"admin evidence"
+            body = b"admin evidence shellmates{test_flag}"
             self.send_response(200)
         else:
             body = b"not admin"
@@ -105,11 +115,45 @@ class AuthSessionTests(unittest.TestCase):
         context = set_auth_session_mode("benchmark")
         try:
             text, validated = _invoke("session_jwt_privilege_check", {"session_ref": session_ref, "path": "/home"})
+            self.assertTrue(validated["data"]["validated"])
+            self.assertTrue(validated["data"]["baseline_denied"])
+            self.assertTrue(validated["data"]["content_changed"])
+            self.assertNotIn("eyJ", text)
+            self.assertNotIn("123", text)
+
+            text, search = _invoke(
+                "session_response_search",
+                {"session_ref": session_ref, "path": "/home", "keyword_or_regex": r"regex:shellmates\{[^}]+\}"},
+            )
         finally:
             reset_auth_session_mode(context)
-        self.assertTrue(validated["data"]["validated"])
-        self.assertNotIn("eyJ", text)
-        self.assertNotIn("123", text)
+        self.assertEqual(search["data"]["match_count"], 1)
+        self.assertIn("shellmates{test_flag}", text)
+
+    def test_privilege_check_rejects_an_unchanged_http_200_login_page(self):
+        _text, login = _invoke("auth_login", {"url": f"{self.base_url}/login", "username": "zombo", "password": "zombo"})
+        context = set_auth_session_mode("benchmark")
+        try:
+            _text, result = _invoke("session_jwt_privilege_check", {"session_ref": login["data"]["session_ref"], "path": "/soft-home"})
+        finally:
+            reset_auth_session_mode(context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["baseline_denied"])
+        self.assertFalse(result["data"]["content_changed"])
+        self.assertFalse(result["data"]["validated"])
+
+    def test_legacy_jwt_tools_are_not_available_to_the_agent(self):
+        names = {tool.name for tool in BASE_TOOLS}
+        self.assertNotIn("jwt_hmac_brute", names)
+        self.assertNotIn("jwt_alg_none_attack", names)
+        self.assertNotIn("jwt_key_confusion", names)
+
+    def test_denied_response_recognizes_the_challenge_guest_message(self):
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b"Sorry, you are not an admin"
+        self.assertTrue(_denied_response(response))
 
 
 if __name__ == "__main__":

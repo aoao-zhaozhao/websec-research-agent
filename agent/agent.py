@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -43,15 +44,103 @@ class Agent:
             )
         )
 
+        # v1.8: MCP 生命周期管理器（可选，由 web_server 注入）
+        self._mcp_lifecycle: Any = None
+
+        # v1.8: 流量捕获（按扫描会话创建）
+        self._traffic_capture: Any = None
+
         self.agent = create_react_agent(self.llm, self._tools())
         self.messages = [SystemMessage(content=SYSTEM_PROMPT)]
         self._active_scan: ScanState | None = None
         self.last_scan: ScanState | None = None
 
+    def set_mcp_lifecycle(self, lifecycle: Any) -> None:
+        """注入 MCP 生命周期管理器（由 web_server 在创建 Agent 后调用）。"""
+        self._mcp_lifecycle = lifecycle
+
+    def _init_traffic(self, target_url: str) -> None:
+        """为当前扫描初始化流量证据存储、捕获器和 mitmproxy 代理。"""
+        try:
+            from pathlib import Path
+            from urllib.parse import urlparse
+            from agent.traffic.store import TrafficStore
+            from agent.traffic.capture import TrafficCapture
+            from agent.traffic.scope import ScopeChecker, ScopeMode, Target
+            from agent.traffic.proxy import ProxyManager
+            from agent.tools.traffic_tools import set_traffic_store
+            from agent.tools.http_tools import set_traffic_capture_for_tools
+
+            evidence_dir = Path(self.config.evidence_dir)
+            traffic_dir = evidence_dir / "traffic"
+            store = TrafficStore(traffic_dir)
+
+            parsed = urlparse(target_url)
+            target_host = (parsed.hostname or "").lower()
+            if target_host:
+                scope = ScopeChecker(
+                    targets=[Target(host=target_host)],
+                    mode=ScopeMode.SUBDOMAIN,
+                )
+            else:
+                scope = ScopeChecker(mode=ScopeMode.OPEN)
+
+            capture = TrafficCapture(store, scope)
+            self._traffic_capture = capture
+            set_traffic_store(store)
+            set_traffic_capture_for_tools(capture)
+
+            # v1.8: 启动 mitmproxy 代理（免费 Tier-A 后端）
+            self._proxy_manager: Any = ProxyManager(capture, port=8080)
+            proxy_ok = self._proxy_manager.start()
+            if proxy_ok:
+                print(f"[Agent] mitmproxy 代理已启动 → {self._proxy_manager.proxy_url}")
+                # 将 http_client 路由到代理
+                from agent.tools.http_client import set_proxy
+                set_proxy(self._proxy_manager.proxy_url)
+            else:
+                print(f"[Agent] mitmproxy 代理启动失败: {self._proxy_manager._error}，使用直连模式")
+                self._proxy_manager = None
+        except Exception as exc:
+            print(f"[Agent] 流量存储初始化失败: {exc}")
+            self._proxy_manager = None
+
+    def _teardown_traffic(self) -> None:
+        """扫描结束后停止代理并清理流量捕获引用。"""
+        proxy = getattr(self, "_proxy_manager", None)
+        if proxy is not None:
+            proxy.stop()
+            print(f"[Agent] mitmproxy 代理已停止（共捕获 {proxy.flow_count} 条流量）")
+            self._proxy_manager = None
+        from agent.tools.http_client import set_proxy
+        set_proxy(None)
+        self._traffic_capture = None
+
     def _tools(self):
         tools = list(BASE_TOOLS)
         if self._search_knowledge_tool:
             tools.append(self._search_knowledge_tool)
+        # v1.8: 动态注入 MCP 工具
+        if self._mcp_lifecycle is not None:
+            try:
+                from .tools.structured import mcp_tool_adapter
+                for schema in self._mcp_lifecycle.get_tool_schemas():
+                    tool_name = schema.get("name", "")
+                    server_name = schema.get("server_name", "")
+                    # 跳过已有同名工具（避免覆盖本地实现）
+                    existing_names = {t.name for t in tools}
+                    if tool_name in existing_names:
+                        continue
+                    adapted = mcp_tool_adapter(
+                        tool_name=tool_name,
+                        server_name=server_name or "",
+                        input_schema=schema.get("inputSchema", {}),
+                        description=schema.get("description", ""),
+                        lifecycle_manager=self._mcp_lifecycle,
+                    )
+                    tools.append(adapted)
+            except Exception as exc:
+                print(f"[Agent] MCP 工具注入失败: {exc}")
         return tools
 
     def _build_llm(self) -> ChatOpenAI:
@@ -166,17 +255,15 @@ class Agent:
             or result.get("response")
         )
 
-    def _record_model_usage(self, scan_id: str, output: Any) -> None:
-        """Persist provider usage when LangChain exposes it on a model result."""
+    def _record_model_usage(self, scan_id: str, output: Any) -> dict[str, int | str] | None:
+        """Persist provider usage and return normalized values for the live UI."""
         telemetry = getattr(self, "telemetry", None)
-        if telemetry is None:
-            return
         usage = getattr(output, "usage_metadata", None)
         response_metadata = getattr(output, "response_metadata", {}) or {}
         if not isinstance(usage, dict):
             usage = response_metadata.get("token_usage") or response_metadata.get("usage")
         if not isinstance(usage, dict):
-            return
+            return None
         input_tokens = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
         output_tokens = int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
         details = usage.get("input_token_details") or usage.get("prompt_tokens_details") or {}
@@ -200,15 +287,22 @@ class Agent:
         cost_usd = None
         if input_rate is not None and output_rate is not None:
             cost_usd = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
-        telemetry.record_model_usage(
-            scan_id,
-            model=self.config.model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_tokens=cached_tokens,
-            cost_usd=cost_usd,
-            raw_usage=usage,
-        )
+        if telemetry is not None:
+            telemetry.record_model_usage(
+                scan_id,
+                model=self.config.model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cached_tokens=cached_tokens,
+                cost_usd=cost_usd,
+                raw_usage=usage,
+            )
+        return {
+            "model": self.config.model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cached_tokens": cached_tokens,
+        }
 
     async def run_events(
         self,
@@ -228,6 +322,11 @@ class Agent:
         scan = ScanState(target=target_from_input(user_input))
         self._active_scan = scan
         self.last_scan = scan
+
+        # v1.8: 初始化流量证据存储
+        if scan.target:
+            self._init_traffic(scan.target)
+
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             telemetry.create_run(
@@ -253,6 +352,7 @@ class Agent:
         self.agent = create_react_agent(self.llm, self._tools())
 
         full_response: list[str] = []
+        model_call_started: dict[str, float] = {}
         evolution_finalized = False
         auth_session_token = set_auth_session_mode(mode)
         case_evidence_token = begin_case_evidence_gate(scan.scan_id, scan.target)
@@ -265,7 +365,9 @@ class Agent:
             ):
                 kind = event["event"]
 
-                if kind == "on_chat_model_stream":
+                if kind == "on_chat_model_start":
+                    model_call_started[str(event.get("run_id", ""))] = time.perf_counter()
+                elif kind == "on_chat_model_stream":
                     chunk = event["data"]["chunk"]
                     reasoning = self._reasoning_content(chunk)
                     if reasoning and self.config.show_reasoning:
@@ -276,7 +378,16 @@ class Agent:
                             telemetry.update_run_summary(scan.scan_id, "".join(full_response))
                         yield {"type": "token", "scan_id": scan.scan_id, "content": chunk.content}
                 elif kind == "on_chat_model_end":
-                    self._record_model_usage(scan.scan_id, event.get("data", {}).get("output"))
+                    call_id = str(event.get("run_id", ""))
+                    started_at = model_call_started.pop(call_id, None)
+                    live_usage = self._record_model_usage(scan.scan_id, event.get("data", {}).get("output"))
+                    if live_usage is not None:
+                        yield {
+                            "type": "model_usage",
+                            "scan_id": scan.scan_id,
+                            "duration_ms": round((time.perf_counter() - started_at) * 1000) if started_at else None,
+                            **live_usage,
+                        }
                 elif kind == "on_tool_start":
                     tool_name = event.get("name", "tool")
                     run_id = str(event.get("run_id", ""))
@@ -398,6 +509,7 @@ class Agent:
             end_case_evidence_gate(case_evidence_token)
             if not evolution_finalized:
                 self._finalize_evolution()
+            self._teardown_traffic()
             self._active_scan = None
 
     async def run(self, user_input: str) -> AsyncIterator[str]:

